@@ -1,26 +1,24 @@
-import numpy as np
-import torch
-import gym
 import argparse
 import os
 
+import gym
+import numpy as np
+import torch
 from tensorboardX import SummaryWriter
 
-from utils import util, buffer
-from agent.sac import sac_agent
-from agent.vlsac import vlsac_agent
 from agent.ctrlsac import ctrlsac_agent
 from agent.diffsrsac import diffsrsac_agent
+from agent.sac import sac_agent
 from agent.spedersac import spedersac_agent
-
-
+from agent.vlsac import vlsac_agent
+from utils import buffer, util
 
 EPS_GREEDY = 0.01
 
 if __name__ == "__main__":
 
   parser = argparse.ArgumentParser()
-  parser.add_argument("--dir", default=0, type=int)                     
+  parser.add_argument("--dir", default=0, type=int)
   parser.add_argument("--alg", default="diffsrsac")                     # Alg name (sac, vlsac, spedersac, ctrlsac, mulvdrq, diffsrsac, spedersac)
   parser.add_argument("--env", default="HalfCheetah-v4")          # Environment name
   parser.add_argument("--seed", default=0, type=int)              # Sets Gym, PyTorch and Numpy seeds
@@ -55,7 +53,7 @@ if __name__ == "__main__":
   eval_env.seed(args.seed)
   max_length = env._max_episode_steps
 
-  # setup log 
+  # setup log
   log_path = f'log/{args.env}/{args.alg}/{args.dir}/{args.seed}'
   summary_writer = SummaryWriter(log_path)
 
@@ -63,9 +61,9 @@ if __name__ == "__main__":
   torch.manual_seed(args.seed)
   np.random.seed(args.seed)
 
-  # 
+  #
   state_dim = env.observation_space.shape[0]
-  action_dim = env.action_space.shape[0] 
+  action_dim = env.action_space.shape[0]
   max_action = float(env.action_space.high[0])
 
   kwargs = {
@@ -87,7 +85,7 @@ if __name__ == "__main__":
   elif args.alg == 'ctrlsac':
     kwargs['extra_feature_steps'] = args.extra_feature_steps
     # hardcoded for now
-    kwargs['feature_dim'] = 2048  
+    kwargs['feature_dim'] = 2048
     kwargs['hidden_dim'] = 1024
     agent = ctrlsac_agent.CTRLSACAgent(**kwargs)
   elif args.alg == 'diffsrsac':
@@ -102,7 +100,7 @@ if __name__ == "__main__":
     kwargs['critic_and_actor_lr'] = 0.0003
     kwargs['critic_and_actor_hidden_dim'] = 256
     agent = spedersac_agent.SPEDERSACAgent(**kwargs)
-  
+
   replay_buffer = buffer.ReplayBuffer(state_dim, action_dim)
 
   # Evaluate untrained policy
@@ -115,7 +113,7 @@ if __name__ == "__main__":
   timer = util.Timer()
 
   for t in range(int(args.max_timesteps)):
-    
+
     episode_timesteps += 1
 
     # Select action randomly or according to policy
@@ -130,7 +128,7 @@ if __name__ == "__main__":
         action = agent.select_action(state, explore=True)
 
     # Perform action
-    next_state, reward, done, _ = env.step(action) 
+    next_state, reward, done, _ = env.step(action)
     done_bool = float(done) if episode_timesteps < max_length else 0
 
     # Store data in replay buffer
@@ -138,19 +136,19 @@ if __name__ == "__main__":
 
     state = next_state
     episode_reward += reward
-    
+
     # Train agent after collecting sufficient data
     if t >= args.start_timesteps:
       info = agent.train(replay_buffer, batch_size=args.batch_size)
 
-    if done: 
+    if done:
       # +1 to account for 0 indexing. +0 on ep_timesteps since it will increment +1 even if done=True
       print(f"Total T: {t+1} Episode Num: {episode_num+1} Episode T: {episode_timesteps} Reward: {episode_reward:.3f}")
       # Reset environment
       state, done = env.reset(), False
       episode_reward = 0
       episode_timesteps = 0
-      episode_num += 1 
+      episode_num += 1
 
     # Evaluate episode
     if (t + 1) % args.eval_freq == 0:
