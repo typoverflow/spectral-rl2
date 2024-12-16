@@ -96,3 +96,49 @@ def convert_to_tensor(obj, device):
         return obj.to(device)
     else:
         return torch.from_numpy(obj).to(device)
+
+def at_least_ndim(x: Union[np.ndarray, torch.Tensor, int, float], ndim: int, pad: int = 0):
+    """ Add dimensions to the input tensor to make it at least ndim-dimensional.
+
+    Args:
+        x: Union[np.ndarray, torch.Tensor, int, float], input tensor
+        ndim: int, minimum number of dimensions
+        pad: int, padding direction. `0`: pad in the last dimension, `1`: pad in the first dimension
+
+    Returns:
+        Any of these 2 options
+
+        - np.ndarray or torch.Tensor: reshaped tensor
+        - int or float: input value
+
+    Examples:
+        >>> x = np.random.rand(3, 4)
+        >>> at_least_ndim(x, 3, 0).shape
+        (3, 4, 1)
+        >>> x = torch.randn(3, 4)
+        >>> at_least_ndim(x, 4, 1).shape
+        (1, 1, 3, 4)
+        >>> x = 1
+        >>> at_least_ndim(x, 3)
+        1
+    """
+    if isinstance(x, np.ndarray):
+        if ndim > x.ndim:
+            if pad == 0:
+                return np.reshape(x, x.shape + (1,) * (ndim - x.ndim))
+            else:
+                return np.reshape(x, (1,) * (ndim - x.ndim) + x.shape)
+        else:
+            return x
+    elif isinstance(x, torch.Tensor):
+        if ndim > x.ndim:
+            if pad == 0:
+                return torch.reshape(x, x.shape + (1,) * (ndim - x.ndim))
+            else:
+                return torch.reshape(x, (1,) * (ndim - x.ndim) + x.shape)
+        else:
+            return x
+    elif isinstance(x, (int, float)):
+        return x
+    else:
+        raise ValueError(f"Unsupported type {type(x)}")

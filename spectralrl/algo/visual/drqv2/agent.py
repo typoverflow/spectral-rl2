@@ -62,6 +62,11 @@ class DrQv2(BaseVisualAlgorithm):
         self._step = 1
         self.train()
 
+    def train(self, training=True):
+        self.training = training
+        for module in [self.encoder, self.actor, self.critic]:
+            module.train(training)
+
     @torch.no_grad()
     def evalute(self, *args, **kwargs):
         return {}, None

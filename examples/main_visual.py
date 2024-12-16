@@ -61,7 +61,7 @@ class Trainer:
         algo_cls = {
             "drqv2": DrQv2,
             "diffsr_drqv2": DiffSR_DrQv2,
-            "mulvrep": MuLVRep_DrQv2
+            "mulvrep_drqv2": MuLVRep_DrQv2
         }.get(cfg.algo.cls)
         self.agent = algo_cls(
             self.train_env.observation_spec(),
@@ -105,13 +105,7 @@ class Trainer:
             else:
                 if cfg.pretrain_steps > 0 and self.global_frame == cfg.random_frames:
                     for i_pretrain in trange(cfg.pretrain_steps, desc="pretrain"):
-                        pretrain_metrics = self.agent.pretrain_step(self.replay_iter, step=i_pretrain)
-                        if i_pretrain % 1000 == 0:
-                            gen_metrics, grid = self.agent.evaluate(self.replay_iter)
-                            pretrain_metrics.update(gen_metrics)
-                            self.logger.log_scalars("pretrain", pretrain_metrics, step=i_pretrain)
-                            self.logger.log_image("pretrain/recon", grid, step=i_pretrain)
-
+                        pretrain_metrics = self.agent.pretrain_step(self.replay_buffer, step=i_pretrain)
                 action = self.agent.select_action(time_step.observation, self.global_step, deterministic=False)
                 for i_update in range(cfg.utd):
                     train_metrics = self.agent.train_step(self.replay_buffer, self.global_step)
@@ -164,10 +158,11 @@ class Trainer:
         }
 
         # agent evaluate if needed
-        agent_metrics, reconstruction = self.agent.evaluate(self.replay_buffer)
-        metrics.update(agent_metrics)
-        if reconstruction is not None:
-            self.logger.log_image("info/reconstruction", reconstruction, step=self.global_frame)
+        if self.global_frame != 0: # make sure there is sample
+            agent_metrics, reconstruction = self.agent.evaluate(self.replay_buffer)
+            metrics.update(agent_metrics)
+            if reconstruction is not None:
+                self.logger.log_image("info/reconstruction", reconstruction, step=self.global_frame)
         self.agent.train(True)
         return metrics
 
