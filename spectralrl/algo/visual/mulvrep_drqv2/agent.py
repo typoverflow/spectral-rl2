@@ -230,7 +230,8 @@ class MuLVRep_DrQv2(BaseVisualAlgorithm):
         critic_loss = self.critic_loss_fn(Q1, target_Q) + self.critic_loss_fn(Q2, target_Q)
 
         return {
-            "info/q_value": Q1.mean().item(),
+            "info/q_pred": Q1.mean().item(),
+            "info/reward": reward.mean().item(),
             "loss/critic_loss": critic_loss.item()
         }, critic_loss
 

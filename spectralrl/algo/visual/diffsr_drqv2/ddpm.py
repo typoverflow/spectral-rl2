@@ -120,7 +120,8 @@ class DDPM(nn.Module):
         xt, t, eps = self.add_noise(x0)
         alphabars = self.alphabars[t]
         model_out = self.forward(xt, t.unsqueeze(-1), state, action)
-        loss = (model_out * (1-alphabars).sqrt() + eps).pow(2).sum(-1).mean()
+        # loss = (model_out * (1-alphabars).sqrt() + eps).pow(2).sum(-1).mean()
+        loss = (model_out - eps).pow(2).sum(-1).mean()  # use eps-prediction for improved performance
         stats = ({
             "info/score_l1_norm": model_out.abs().mean(),
             "info/left_l1_norm": (model_out * (1-alphabars).sqrt()).abs().mean(),
@@ -146,7 +147,8 @@ class DDPM(nn.Module):
                 sigma_t_square = self.betas[timestep]*(1-self.alphabars_prev[timestep]) / (1-self.alphabars[timestep])
                 sigma_t_square = sigma_t_square.clip(1e-20)
                 sigma_t = sigma_t_square.sqrt()
-            return 1. / self.alphas[timestep].sqrt() * (xt + self.betas[timestep] * score) + sigma_t * z
+            # return 1. / self.alphas[timestep].sqrt() * (xt + self.betas[timestep] * score) + sigma_t * z
+            return 1. / self.alphas[timestep].sqrt() * (xt - self.betas[timestep] / (1-self.alphabars[timestep]).sqrt() * score) + sigma_t * z
 
         xt = torch.randn(shapes, device=self.device)
         if self.factorized:

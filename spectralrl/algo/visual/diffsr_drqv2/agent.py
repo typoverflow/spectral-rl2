@@ -1,3 +1,5 @@
+from functools import partial
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -46,7 +48,7 @@ class DiffSR_DrQv2(BaseVisualAlgorithm):
         if self.critic_loss_type == "mse":
             self.critic_loss_fn = F.mse_loss
         elif self.critic_loss_type == "huber":
-            self.critic_loss_fn = F.huber_loss
+            self.critic_loss_fn = partial(F.huber_loss, delta=250.0)
 
         # networks
         self.vae = VAE1D(cfg).to(self.device)
@@ -101,28 +103,30 @@ class DiffSR_DrQv2(BaseVisualAlgorithm):
         img_stack = img_stack.float()
         next_img_step = next_img_step[:, -3:, ...].float()
 
+        vae, diffusion = self.vae_target, self.diffusion_target
+
         B, S, W, H = img_stack.shape
         img_stack = img_stack.view(B*3, S//3, W, H)
-        latent_stack, _ = self.vae_target(img_stack, sample_posterior=False, forward_decoder=False)
+        latent_stack, _ = vae(img_stack, sample_posterior=False, forward_decoder=False)
         latent_stack = latent_stack.reshape(B, -1)
-        next_latent, _ = self.vae_target(next_img_step, sample_posterior=False, forward_decoder=False)
+        next_latent, _ = vae(next_img_step, sample_posterior=False, forward_decoder=False)
         raw_next_img = next_img_step[:9, :] / 255. - 0.5
-        recon_next_img = self.vae_target.decode(next_latent)[:9, :]
+        recon_next_img = vae.decode(next_latent)[:9, :]
 
         # DDPM sampling
         latent_stack = self.scaler(latent_stack)
         next_latent = self.scaler(next_latent)
 
         with torch.no_grad():
-            _, info = self.diffusion_target.sample(next_latent.shape, latent_stack, action, preserve_history=True)
+            _, info = diffusion.sample(next_latent.shape, latent_stack, action, preserve_history=True)
             history = info["sample_history"]
 
-        stepsize = self.diffusion_target.sample_steps // 5
+        stepsize = diffusion.sample_steps // 5
         history = list(reversed(history))
         checkpoints = list(range(0, self.sample_steps, stepsize)) + [self.sample_steps]
         checkpoints = list(reversed(checkpoints))
         checkpoint_next_latents = [history[c] for c in checkpoints]
-        checkpoint_gen_next_imgs = [self.vae_target.decode(xt)[:9, :] for xt in checkpoint_next_latents]
+        checkpoint_gen_next_imgs = [vae.decode(xt)[:9, :] for xt in checkpoint_next_latents]
 
         checkpoint_next_latents = torch.stack(checkpoint_next_latents, dim=0)
         img_to_show = torch.stack([raw_next_img, recon_next_img]+checkpoint_gen_next_imgs, dim=0)
@@ -174,12 +178,12 @@ class DiffSR_DrQv2(BaseVisualAlgorithm):
         else:
             ae_metrics, recon_loss, kl_loss, latent, next_latent_step, latent_mode, next_latent_step_mode = self.ae_step(img_stack, next_img_step)
             tot_metrics.update(ae_metrics)
-            score_metrics, diffusion_loss, reg_loss, *_ = self.diffusion_step(latent, action, next_latent_step, reward)
+            score_metrics, diffusion_loss, reg_loss, *_ = self.diffusion_step(latent_mode, action, next_latent_step_mode.detach(), reward)
             tot_metrics.update(score_metrics)
             self.optim["vae"].zero_grad(set_to_none=True)
             self.optim["diffusion"].zero_grad(set_to_none=True)
             (recon_loss*self.recon_coef + kl_loss*self.kl_coef + diffusion_loss*self.diffusion_coef).backward()
-            grad_norm = torch.nn.utils.clip_grad_norm_(self.diffusion.parameters(), 100.0)
+            grad_norm = torch.nn.utils.clip_grad_norm_(self.diffusion.parameters(), 100)
             self.optim["vae"].step()
             self.optim["diffusion"].step()
 
@@ -203,7 +207,7 @@ class DiffSR_DrQv2(BaseVisualAlgorithm):
             ae_metrics, recon_loss, kl_loss, latent, next_latent_step, latent_mode, next_latent_step_mode = \
                 self.ae_step(img_stack, next_img_step)
             score_metrics, diffusion_loss, reg_loss, *_ = \
-                self.diffusion_step(latent, action, next_latent_step, reward)
+                self.diffusion_step(latent_mode, action, next_latent_step_mode.detach(), reward)
             critic_metrics, critic_loss = \
                 self.critic_step(img_stack, action, next_img_stack, reward, discount, step, latent_mode)
 
@@ -244,14 +248,15 @@ class DiffSR_DrQv2(BaseVisualAlgorithm):
         all_latent, latent_dist, img_pred = self.vae(all_img, sample_posterior=True, forward_decoder=True)
         all_latent_mode = latent_dist.mode()
 
+        # only use some of the data
+        img_pred, img_target = img_pred[:B*3], img_target[:B*3]
         recon_loss = F.mse_loss(img_pred, img_target, reduction="sum") / img_pred.shape[0]
-        kl_loss = latent_dist.kl().mean()
+        kl_loss = latent_dist.kl()[:B*3].mean()
 
         latent, next_latent_step = torch.split(all_latent, [B*3, B], dim=0)
-        latent_mode, next_latent_mode = torch.split(all_latent_mode, [B*3, B], dim=0)
+        latent_mode, next_latent_step_mode = torch.split(all_latent_mode, [B*3, B], dim=0)
         latent = latent.reshape(B, -1)
         latent_mode = latent_mode.reshape(B, -1)
-        next_latent_mode = next_latent_mode.reshape(B, -1)
 
         return {
             "loss/recon_loss": recon_loss.item(),
@@ -261,7 +266,7 @@ class DiffSR_DrQv2(BaseVisualAlgorithm):
             "info/latent_l1_norm": latent.abs().mean().item(),
             "info/latent_dist_mean": latent_dist.mode().mean().item(),
             "info/latent_dist_std": latent_dist.std.mean().item()
-        }, recon_loss, kl_loss, latent, next_latent_step, latent_mode, next_latent_mode
+        }, recon_loss, kl_loss, latent, next_latent_step, latent_mode, next_latent_step_mode
 
     def diffusion_step(self, latent, action, next_latent_step, reward=None):
         B = latent.shape[0]
@@ -304,11 +309,17 @@ class DiffSR_DrQv2(BaseVisualAlgorithm):
         q_pred = self.critic(feature)
         critic_loss = self.critic_loss_fn(q_pred, q_target.unsqueeze(0).repeat(2, 1, 1))
 
+        q_error = (q_target - q_pred).abs()
         return {
             "loss/critic_loss": critic_loss.item(),
             "info/q_pred": q_pred.mean().item(),
             "info/q_target": q_target.mean().item(),
-            "info/reward": reward.mean().item()
+            "info/reward_mean": reward.mean().item(),
+            "info/reward_max": reward.max().item(),
+            "info/reward_min": reward.min().item(),
+            "info/q_error_mean": q_error.mean().item(),
+            "info/q_error_max": q_error.max().item(),
+            "info/q_error_min":q_error.min().item()
         }, critic_loss
 
     def actor_step(self, latent, step):

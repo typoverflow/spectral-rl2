@@ -22,7 +22,7 @@ class Trainer:
 
         # setup logger, seed and device
         self.logger = TensorboardLogger(
-            "/".join([cfg.log_dir, cfg.name, cfg.task]),
+            "/".join([cfg.log_dir, cfg.algo.cls, cfg.name, cfg.task]),
             "_".join(["seed"+str(cfg.seed), cfg.name]),
             activate=not cfg.debug
         )
