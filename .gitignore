@@ -3,7 +3,7 @@
 log/
 .idea/
 **/*.ipynb
-**/log*
+log*
 out/
 wandb/
 ckpts/
