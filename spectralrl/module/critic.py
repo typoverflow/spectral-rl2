@@ -3,8 +3,9 @@ from typing import Any, Callable, Dict, Optional, Sequence, Type, Union
 
 import torch
 import torch.nn as nn
-from wiserl.module.net.basic import weight_init
-from wiserl.module.net.mlp import MLP, EnsembleMLP
+
+from spectralrl.module.net.basic import weight_init
+from spectralrl.module.net.mlp import MLP, EnsembleMLP
 
 ModuleType = Type[nn.Module]
 
