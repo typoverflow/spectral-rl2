@@ -4,14 +4,18 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from spectralrl.algo.state.ctrl_sac.network import Mu, Phi, Theta
+from spectralrl.algo.state.lvrep_sac.network import (
+    Decoder,
+    Encoder,
+    GaussianFeature,
+    RFFCritic,
+)
 from spectralrl.algo.state.sac.agent import SAC
 from spectralrl.module.actor import SquashedGaussianActor
-from spectralrl.module.critic import EnsembleQ
 from spectralrl.utils.utils import convert_to_tensor, make_target, sync_target
 
 
-class Ctrl_SAC(SAC):
+class LVRep_SAC(SAC):
     def __init__(
         self,
         obs_dim,
@@ -21,28 +25,37 @@ class Ctrl_SAC(SAC):
     ) -> None:
         super().__init__(obs_dim, action_dim, cfg, device)
         self.feature_dim = cfg.feature_dim
+        self.feature_tau = cfg.feature_tau
+        self.use_feature_target = cfg.use_feature_target
         self.feature_update_ratio = cfg.feature_update_ratio
-        self.reward_coef = cfg.reward_coef
 
-        # feature networks
-        self.phi = Phi(
-            feature_dim=cfg.feature_dim,
+        self.encoder = Encoder(
+            feature_dim=self.feature_dim,
             obs_dim=obs_dim,
             action_dim=action_dim,
-            hidden_dims=cfg.phi_hidden_dims,
-        ).to(device)
-        self.mu = Mu(
-            feature_dim=cfg.feature_dim,
+            hidden_dims=cfg.encoder_hidden_dims,
+            activation=nn.ReLU,
+        ).to(self.device)
+        self.decoder = Decoder(
+            feature_dim=self.feature_dim,
             obs_dim=obs_dim,
-            hidden_dims=cfg.mu_hidden_dims,
-        ).to(device)
-        self.theta = Theta(
-            feature_dim=cfg.feature_dim
-        ).to(device)
+            hidden_dims=cfg.decoder_hidden_dims,
+            activation=nn.ReLU,
+        ).to(self.device)
+        self.f = GaussianFeature(
+            feature_dim=self.feature_dim,
+            obs_dim=obs_dim,
+            action_dim=action_dim,
+            hidden_dims=cfg.f_hidden_dims,
+            activation=nn.ReLU,
+        ).to(self.device)
 
-        self.phi_target = make_target(self.phi)
+        if self.use_feature_target:
+            self.f_target = make_target(self.f)
+        else:
+            self.f_target = self.f
         self.feature_optim = torch.optim.Adam(
-            [*self.phi.parameters(), *self.mu.parameters(), *self.theta.parameters()],
+            [*self.encoder.parameters(), *self.decoder.parameters(), *self.f.parameters()],
             lr=cfg.feature_lr
         )
 
@@ -53,22 +66,20 @@ class Ctrl_SAC(SAC):
             hidden_dims=cfg.actor_hidden_dims,
             activation=nn.ELU  # tune
         ).to(self.device)
-        self.critic = EnsembleQ(
-            input_dim=self.feature_dim,
-            hidden_dims=cfg.critic_hidden_dims,
-            ensemble_size=2,
-            activation=nn.ELU  # tune
+        self.critic = RFFCritic(
+            feature_dim=self.feature_dim,
+            num_noise=cfg.num_noise,
+            hidden_dim=cfg.critic_hidden_dim,
         ).to(self.device)
         self.critic_target = make_target(self.critic)
-
         self.actor_optim = torch.optim.Adam(self.actor.parameters(), lr=cfg.actor_lr)
         self.critic_optim = torch.optim.Adam(self.critic.parameters(), lr=cfg.critic_lr)
 
-    def train(self, training):
+    def train(self, training=True):
         super().train(training)
-        self.phi.train(training)
-        self.mu.train(training)
-        self.theta.train(training)
+        self.encoder.train(training)
+        self.decoder.train(training)
+        self.f.train(training)
 
     def train_step(self, buffer, batch_size):
         tot_metrics = {}
@@ -83,7 +94,9 @@ class Ctrl_SAC(SAC):
             self.feature_optim.zero_grad()
             feature_loss.backward()
             self.feature_optim.step()
-            sync_target(self.phi, self.phi_target, self.tau)
+
+            if self.use_feature_target:
+                sync_target(self.f, self.f_target, self.feature_tau)
 
         critic_loss, critic_metrics = self.critic_step(obs, action, next_obs, reward, terminal)
         tot_metrics.update(critic_metrics)
@@ -111,29 +124,32 @@ class Ctrl_SAC(SAC):
         return tot_metrics
 
     def feature_step(self, obs, action, next_obs, reward):
-        z_phi = self.phi(obs, action)
-        z_mu = self.mu(next_obs)
-        label = torch.eye(obs.shape[0]).to(self.device)
+        z, _, post_mean, post_logstd = self.encoder.sample(obs, action, next_obs, deterministic=False, return_mean_logstd=True)
+        s_prime_pred, r_pred = self.decoder.sample(z)
+        s_loss = F.mse_loss(s_prime_pred, next_obs)
+        r_loss = F.mse_loss(r_pred, reward)
+        recon_loss = r_loss + s_loss
 
-        # we take NCE gamma = 1 here, while the paper uses 0.2
-        contrastive = (z_phi.unsqueeze(1) * z_mu.unsqueeze(0)).sum(-1)
-        model_loss = F.cross_entropy(contrastive, label)
-        reward_loss = F.mse_loss(self.theta(z_phi), reward)
-        feature_loss = model_loss + self.reward_coef * reward_loss
+        prior_mean, prior_logstd = self.f(obs, action)
+        post_var = (2 * post_logstd).exp()
+        prior_var = (2 * prior_logstd).exp()
+        kl_loss = prior_logstd - post_logstd + 0.5 * (post_var + (post_mean-prior_mean)**2) / prior_var - 0.5
+        kl_loss = kl_loss.mean()
+        feature_loss = (recon_loss + kl_loss).mean()
         return feature_loss, {
             "loss/feature_loss": feature_loss.item(),
-            "loss/model_loss": model_loss.item(),
-            "loss/reward_loss": reward_loss.item(),
+            "loss/kl_loss": kl_loss.item(),
+            "loss/recon_loss": recon_loss.item(),
         }
 
     def critic_step(self, obs, action, next_obs, reward, terminal):
         with torch.no_grad():
             next_action, next_logprob, *_ = self.actor.sample(next_obs)
-            next_feature = self.get_feature(next_obs, next_action, use_target=True)
-            q_target = self.critic_target(next_feature).min(0)[0] - self.alpha * next_logprob
+            mean, logstd = self.f_target(obs, action)
+            next_mean, next_logstd = self.f_target(next_obs, next_action)
+            q_target = self.critic_target(next_mean, next_logstd).min(0)[0] - self.alpha * next_logprob
             q_target = reward + self.discount * (1 - terminal) * q_target
-        feature = self.get_feature(obs, action, use_target=True)
-        q_pred = self.critic(feature)
+        q_pred = self.critic(mean, logstd)
         critic_loss = (q_target - q_pred).pow(2).sum(0).mean()
         return critic_loss, {
             "loss/critic_loss": critic_loss.item(),
@@ -141,8 +157,8 @@ class Ctrl_SAC(SAC):
 
     def actor_step(self, obs):
         new_action, new_logprob, *_ = self.actor.sample(obs)
-        new_feature = self.get_feature(obs, new_action, use_target=False)
-        q_value = self.critic(new_feature)
+        mean, logstd = self.f_target(obs, new_action)
+        q_value = self.critic(mean, logstd)
         actor_loss = (self.alpha * new_logprob - q_value.min(0)[0]).mean()
         return actor_loss, {
             "misc/q_value_mean": q_value.mean().item(),
@@ -150,7 +166,3 @@ class Ctrl_SAC(SAC):
             "misc/q_value_min": q_value.min(0)[0].mean().item(),
             "loss/actor_loss": actor_loss.item()
         }
-
-    def get_feature(self, obs, action, use_target=True):
-        model = self.phi_target if use_target else self.phi
-        return model(obs, action)

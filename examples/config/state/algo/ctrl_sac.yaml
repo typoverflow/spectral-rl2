@@ -4,7 +4,7 @@ tau: 0.005
 alpha: 0.2
 auto_entropy: true
 
-target_update_freq: 1
+target_update_freq: 2 # tune
 
 # critic_hidden_dims: [256, 256]
 actor_hidden_dims: [256, 256]
@@ -20,4 +20,4 @@ critic_hidden_dims: [1024, ] # tune
 phi_hidden_dims: [1024, 1024]
 mu_hidden_dims: [1024, 1024]
 reward_coef: 0.5
-feature_update_ratio: 1 # tune
+feature_update_ratio: 4 # tune

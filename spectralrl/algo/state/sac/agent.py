@@ -31,11 +31,10 @@ class SAC(BaseStateAlgorithm):
             output_dim=self.action_dim,
             hidden_dims=cfg.actor_hidden_dims,
         ).to(self.device)
-
         self.critic = EnsembleQ(
             input_dim=self.obs_dim+self.action_dim,
             hidden_dims=cfg.critic_hidden_dims,
-            ensemble_size=2
+            ensemble_size=2,
         ).to(self.device)
         self.critic_target = make_target(self.critic)
 
