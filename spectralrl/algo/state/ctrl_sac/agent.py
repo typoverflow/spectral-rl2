@@ -4,10 +4,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from spectralrl.algo.state.ctrl_sac.network import Mu, Phi, Theta
+from spectralrl.algo.state.ctrl_sac.network import Mu, Phi, RFFCritic, Theta
 from spectralrl.algo.state.sac.agent import SAC
 from spectralrl.module.actor import SquashedGaussianActor
-from spectralrl.module.critic import EnsembleQ
 from spectralrl.utils.utils import convert_to_tensor, make_target, sync_target
 
 
@@ -23,6 +22,7 @@ class Ctrl_SAC(SAC):
         self.feature_dim = cfg.feature_dim
         self.feature_update_ratio = cfg.feature_update_ratio
         self.reward_coef = cfg.reward_coef
+        self.temperature = cfg.temperature
 
         # feature networks
         self.phi = Phi(
@@ -53,11 +53,9 @@ class Ctrl_SAC(SAC):
             hidden_dims=cfg.actor_hidden_dims,
             activation=nn.ELU  # tune
         ).to(self.device)
-        self.critic = EnsembleQ(
-            input_dim=self.feature_dim,
-            hidden_dims=cfg.critic_hidden_dims,
-            ensemble_size=2,
-            activation=nn.ELU  # tune
+        self.critic = RFFCritic(
+            feature_dim=self.feature_dim,
+            hidden_dim=cfg.critic_hidden_dim
         ).to(self.device)
         self.critic_target = make_target(self.critic)
 
@@ -113,11 +111,14 @@ class Ctrl_SAC(SAC):
     def feature_step(self, obs, action, next_obs, reward):
         z_phi = self.phi(obs, action)
         z_mu = self.mu(next_obs)
-        label = torch.eye(obs.shape[0]).to(self.device)
 
-        # we take NCE gamma = 1 here, while the paper uses 0.2
-        contrastive = (z_phi.unsqueeze(1) * z_mu.unsqueeze(0)).sum(-1)
-        model_loss = F.cross_entropy(contrastive, label)
+        # normalize
+        # z_phi = F.normalize(z_phi, dim=-1)
+        # z_mu = F.normalize(z_mu, dim=-1)
+
+        logits = torch.matmul(z_phi, z_mu.T) / self.temperature
+        labels = torch.arange(logits.shape[0]).to(self.device)
+        model_loss = F.cross_entropy(logits, labels)
         reward_loss = F.mse_loss(self.theta(z_phi), reward)
         feature_loss = model_loss + self.reward_coef * reward_loss
         return feature_loss, {

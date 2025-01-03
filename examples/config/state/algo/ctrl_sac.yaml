@@ -6,7 +6,7 @@ auto_entropy: true
 
 target_update_freq: 2 # tune
 
-# critic_hidden_dims: [256, 256]
+critic_hidden_dims: [256, 256] # this is actually not used. this is only for compatibility
 actor_hidden_dims: [256, 256]
 
 critic_lr: 0.0003
@@ -16,8 +16,9 @@ alpha_lr: 0.0003
 # below are params specific to ctrl_sac
 feature_dim: 2048
 feature_lr: 0.0003 # tune
-critic_hidden_dims: [1024, ] # tune
 phi_hidden_dims: [1024, 1024]
 mu_hidden_dims: [1024, 1024]
 reward_coef: 0.5
 feature_update_ratio: 4 # tune
+temperature: 1.0
+critic_hidden_dim: 256
