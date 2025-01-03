@@ -13,9 +13,6 @@ class BaseStateAlgorithm(ABC):
     def select_action(self, *args, **kwargs):
         raise NotImplementedError
 
-    def pretrain_step(self, *args, **kwargs):
-        return {}
-
     @abstractmethod
     def train_step(self, *args, **kwargs):
         raise NotImplementedError
