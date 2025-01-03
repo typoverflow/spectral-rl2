@@ -72,6 +72,7 @@ class Trainer:
                 (self.max_episode_length is not None and ep_length >= self.max_episode_length)
 
             self.buffer.add(obs, action, next_obs, reward, terminal and not timeout)
+            obs = next_obs
 
             if terminal or timeout:
                 obs = self.train_env.reset()
@@ -94,7 +95,6 @@ class Trainer:
                 eval_metrics = self.evaluate()
                 self.logger.log_scalars("eval", eval_metrics, step=self.global_step)
 
-            obs = next_obs
             self.global_step += 1
 
     def evaluate(self):
