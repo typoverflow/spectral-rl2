@@ -4,7 +4,7 @@ import numpy as np
 from omegaconf import DictConfig, OmegaConf
 from tqdm import trange
 
-from spectralrl.algo.state import SAC, Ctrl_SAC, LVRep_SAC
+from spectralrl.algo.state import SAC, Ctrl_SAC, LVRep_SAC, Speder_SAC
 from spectralrl.buffer.state import ReplayBuffer
 from spectralrl.utils.logger import TensorboardLogger
 from spectralrl.utils.utils import set_device, set_seed_everywhere
@@ -42,7 +42,7 @@ class Trainer:
             "sac": SAC,
             "lvrep_sac": LVRep_SAC,
             "ctrl_sac": Ctrl_SAC,
-            # "speder_sac": Speder_SAC
+            "speder_sac": Speder_SAC
         }.get(cfg.algo.cls)
         self.agent = algo_cls(
             self.train_env.observation_space.shape[0],
