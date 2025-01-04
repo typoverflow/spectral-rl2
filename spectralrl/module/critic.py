@@ -24,7 +24,6 @@ class EnsembleQ(nn.Module):
         self,
         input_dim: int,
         output_dim: int=1,
-        ortho_init: bool=False,
         device: Union[str, int, torch.device] = "cpu",
         *,
         ensemble_size: int=1,
@@ -38,7 +37,6 @@ class EnsembleQ(nn.Module):
         self.critic_type = "Critic"
         self.input_dim = input_dim
         self.output_dim = output_dim
-        self.ortho_init = ortho_init
         self.device = device
         self.ensemble_size = ensemble_size
 
@@ -68,12 +66,6 @@ class EnsembleQ(nn.Module):
             )
         else:
             raise ValueError(f"ensemble size should be int >= 1.")
-
-        self.reset_parameters()
-
-    def reset_parameters(self):
-        if self.ortho_init:
-            self.apply(partial(weight_init, gain=float(self.ortho_init)))
 
     def forward(self, obs: torch.Tensor, action: Optional[torch.Tensor]=None, *args, **kwargs) -> torch.Tensor:
         """Compute the Q-value (when action is given) or V-value (when action is None).
