@@ -1,54 +1,45 @@
 import math
+from typing import List, Sequence, Union
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import distributions as pyd
 from torch import nn
+from torch.distributions import Normal
 
 
-class TanhTransform(pyd.transforms.Transform):
-  domain = pyd.constraints.real
-  codomain = pyd.constraints.interval(-1.0, 1.0)
-  bijective = True
-  sign = +1
+class SquashedNormal(Normal):
+    def __init__(self,
+                 loc: torch.Tensor,
+                 scale: torch.Tensor,
+                 ):
+        super().__init__(loc, scale)
+        self.epsilon = np.finfo(np.float32).eps.item()
 
-  def __init__(self, cache_size=1):
-    super().__init__(cache_size=cache_size)
+    def log_prob(self,
+                 value: torch.Tensor,
+                 pre_tanh_value: bool=False,
+                 ):
+        if not pre_tanh_value:
+            pre_value = torch.clip(value, -1.0+self.epsilon, 1.0-self.epsilon)
+            pre_value = 0.5 * (pre_value.log1p() - (-pre_value).log1p())
+        else:
+            pre_value = value
+            value = torch.tanh(pre_value)
+        return super().log_prob(pre_value) - 2*(math.log(2.0) - pre_value - torch.nn.functional.softplus(-2 * pre_value))
 
-  @staticmethod
-  def atanh(x):
-    return 0.5 * (x.log1p() - (-x).log1p())
+    def sample(self, sample_shape: Union[Sequence[int], int]=torch.Size([]), return_raw: bool=False):
+        z = super().sample(sample_shape)
+        return (torch.tanh(z), z) if return_raw else torch.tanh(z)
 
-  def __eq__(self, other):
-    return isinstance(other, TanhTransform)
+    def rsample(self, sample_shape: Union[Sequence[int], int]=torch.Size([]), return_raw: bool=False):
+        z = super().rsample(sample_shape)
+        return (torch.tanh(z), z) if return_raw else torch.tanh(z)
 
-  def _call(self, x):
-    return x.tanh()
+    def entropy(self):
+        return super().entropy()
 
-  def _inverse(self, y):
-    # We do not clamp to the boundary here as it may degrade the performance of certain algorithms.
-    # one should use `cache_size=1` instead
-    return self.atanh(y)
-
-  def log_abs_det_jacobian(self, x, y):
-    # We use a formula that is more numerically stable, see details in the following link
-    # https://github.com/tensorflow/probability/commit/ef6bb176e0ebd1cf6e25c6b5cecdd2428c22963f#diff-e120f70e92e6741bca649f04fcd907b7
-    return 2. * (math.log(2.) - x - F.softplus(-2. * x))
-
-
-class SquashedNormal(pyd.transformed_distribution.TransformedDistribution):
-  def __init__(self, loc, scale):
-    self.loc = loc
-    self.scale = scale
-
-    self.base_dist = pyd.Normal(loc, scale)
-    transforms = [TanhTransform()]
-    super().__init__(self.base_dist, transforms)
-
-  @property
-  def mean(self):
-    mu = self.loc
-    for tr in self.transforms:
-        mu = tr(mu)
-    return mu
+    @property
+    def tanh_mean(self):
+        return torch.tanh(self.mean)
