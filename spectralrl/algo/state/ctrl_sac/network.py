@@ -14,10 +14,11 @@ class Phi(nn.Module):
         hidden_dims,
     ) -> None:
         super().__init__()
-        self.mlp = MLP(obs_dim+action_dim, feature_dim, hidden_dims, activation=nn.ELU)
+        self.mlp = MLP(obs_dim+action_dim, feature_dim, hidden_dims, activation=nn.ELU, norm_layer=nn.LayerNorm)
 
     def forward(self, obs, action, dt=None):
         out = self.mlp(torch.concat([obs, action], dim=-1))
+        out = torch.nn.functional.normalize(out, dim=-1)
         return out
 
 
@@ -29,21 +30,22 @@ class Mu(nn.Module):
         hidden_dims,
     ) -> None:
         super().__init__()
-        self.mlp = MLP(obs_dim, feature_dim, hidden_dims, activation=nn.ELU)
+        self.mlp = MLP(obs_dim, feature_dim, hidden_dims, activation=nn.ELU, norm_layer=nn.LayerNorm)
 
     def forward(self, obs):
         out = self.mlp(obs)
-        out = F.tanh(out)
+        out = torch.nn.functional.normalize(out, dim=-1)
         return out
 
 
 class Theta(nn.Module):
     def __init__(
         self,
-        feature_dim
+        feature_dim,
+        hidden_dims,
     ) -> None:
         super().__init__()
-        self.mlp = nn.Linear(feature_dim, 1)
+        self.mlp = MLP(feature_dim, 1, hidden_dims, activation=nn.ELU, norm_layer=nn.LayerNorm)
 
     def forward(self, feature):
         return self.mlp(feature)
@@ -55,6 +57,7 @@ class RFFCritic(nn.Module):
         hidden_dim: int
     ):
         super().__init__()
+        self.ln = nn.LayerNorm(feature_dim)
         self.l1 = nn.Linear(feature_dim, hidden_dim)
         self.l2 = nn.Linear(hidden_dim, hidden_dim)
         self.l3 = nn.Linear(hidden_dim, 1)
@@ -70,6 +73,7 @@ class RFFCritic(nn.Module):
         return torch.stack([q1, q2], dim=0)
 
     def forward_feature(self, x):
+        x = self.ln(x)
         q1 = torch.sin(self.l1(x))
         q1 = torch.nn.functional.elu(self.l2(q1))
 

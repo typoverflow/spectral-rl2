@@ -23,6 +23,8 @@ class Ctrl_SAC(SAC):
         self.feature_update_ratio = cfg.feature_update_ratio
         self.reward_coef = cfg.reward_coef
         self.temperature = cfg.temperature
+        self.back_critic_grad = cfg.back_critic_grad
+        self.critic_coef = cfg.critic_coef
 
         # feature networks
         self.phi = Phi(
@@ -37,7 +39,8 @@ class Ctrl_SAC(SAC):
             hidden_dims=cfg.mu_hidden_dims,
         ).to(device)
         self.theta = Theta(
-            feature_dim=cfg.feature_dim
+            feature_dim=cfg.feature_dim,
+            hidden_dims=cfg.theta_hidden_dims,
         ).to(device)
 
         self.phi_target = make_target(self.phi)
@@ -51,7 +54,7 @@ class Ctrl_SAC(SAC):
             input_dim=self.obs_dim,
             output_dim=self.action_dim,
             hidden_dims=cfg.actor_hidden_dims,
-            activation=nn.ELU  # tune
+            # activation=nn.ELU  # tune
         ).to(self.device)
         self.critic = RFFCritic(
             feature_dim=self.feature_dim,
@@ -76,18 +79,18 @@ class Ctrl_SAC(SAC):
             obs, action, next_obs, reward, terminal = [
                 convert_to_tensor(b, self.device) for b in itemgetter("obs", "action", "next_obs", "reward", "terminal")(batch)
             ]
-            feature_loss, feature_metrics = self.feature_step(obs, action, next_obs, reward)
+            feature_loss, feature_metrics, z_phi = self.feature_step(obs, action, next_obs, reward)
             tot_metrics.update(feature_metrics)
-            self.feature_optim.zero_grad()
-            feature_loss.backward()
-            self.feature_optim.step()
-            sync_target(self.phi, self.phi_target, self.tau)
 
-        critic_loss, critic_metrics = self.critic_step(obs, action, next_obs, reward, terminal)
-        tot_metrics.update(critic_metrics)
-        self.critic_optim.zero_grad()
-        critic_loss.backward()
-        self.critic_optim.step()
+            critic_loss, critic_metrics = self.critic_step(obs, action, next_obs, reward, terminal, z_phi)
+            tot_metrics.update(critic_metrics)
+
+            self.feature_optim.zero_grad()
+            self.critic_optim.zero_grad()
+            (feature_loss + self.critic_coef * critic_loss).backward()
+            self.critic_optim.step()
+            self.feature_optim.step()
+
 
         actor_loss, actor_metrics = self.actor_step(obs)
         tot_metrics.update(actor_metrics)
@@ -103,6 +106,7 @@ class Ctrl_SAC(SAC):
             self.alpha_optim.step()
 
         if self._step % self.target_update_freq == 0:
+            sync_target(self.phi, self.phi_target, self.tau)
             sync_target(self.critic, self.critic_target, self.tau)
 
         self._step += 1
@@ -121,19 +125,31 @@ class Ctrl_SAC(SAC):
         model_loss = F.cross_entropy(logits, labels)
         reward_loss = F.mse_loss(self.theta(z_phi), reward)
         feature_loss = model_loss + self.reward_coef * reward_loss
+
+        pos_logits_sum = logits[torch.arange(logits.shape[0]), labels].sum()
+        neg_logits_sum = logits.sum() - pos_logits_sum
+        pos_logits_mean = pos_logits_sum / logits.shape[0]
+        neg_logits_mean = neg_logits_sum / (logits.shape[0]**2 - logits.shape[0])
         return feature_loss, {
             "loss/feature_loss": feature_loss.item(),
             "loss/model_loss": model_loss.item(),
             "loss/reward_loss": reward_loss.item(),
-        }
+            "misc/phi_norm": z_phi.abs().mean().item(),
+            "misc/mu_norm": z_mu.abs().mean().item(),
+            "misc/pos_logits": pos_logits_mean.item(),
+            "misc/neg_logits": neg_logits_mean.item(),
+        }, z_phi
 
-    def critic_step(self, obs, action, next_obs, reward, terminal):
+    def critic_step(self, obs, action, next_obs, reward, terminal, z_phi=None):
         with torch.no_grad():
             next_action, next_logprob, *_ = self.actor.sample(next_obs)
             next_feature = self.get_feature(next_obs, next_action, use_target=True)
             q_target = self.critic_target(next_feature).min(0)[0] - self.alpha * next_logprob
             q_target = reward + self.discount * (1 - terminal) * q_target
-        feature = self.get_feature(obs, action, use_target=True)
+        if self.back_critic_grad:
+            feature = z_phi
+        else:
+            feature = self.get_feature(obs, action, use_target=True)
         q_pred = self.critic(feature)
         critic_loss = (q_target - q_pred).pow(2).sum(0).mean()
         return critic_loss, {
@@ -142,9 +158,9 @@ class Ctrl_SAC(SAC):
 
     def actor_step(self, obs):
         new_action, new_logprob, *_ = self.actor.sample(obs)
-        new_feature = self.get_feature(obs, new_action, use_target=False)
+        new_feature = self.get_feature(obs, new_action, use_target=True)
         q_value = self.critic(new_feature)
-        actor_loss = (self.alpha * new_logprob - q_value.min(0)[0]).mean()
+        actor_loss = (self.alpha * new_logprob - q_value.mean(0)).mean()
         return actor_loss, {
             "misc/q_value_mean": q_value.mean().item(),
             "misc/q_value_std": q_value.std(0).mean().item(),
