@@ -160,7 +160,7 @@ class Ctrl_SAC(SAC):
         new_action, new_logprob, *_ = self.actor.sample(obs)
         new_feature = self.get_feature(obs, new_action, use_target=True)
         q_value = self.critic(new_feature)
-        actor_loss = (self.alpha * new_logprob - q_value.mean(0)).mean()
+        actor_loss = (self.alpha * new_logprob - q_value.min(0)[0]).mean()
         return actor_loss, {
             "misc/q_value_mean": q_value.mean().item(),
             "misc/q_value_std": q_value.std(0).mean().item(),
