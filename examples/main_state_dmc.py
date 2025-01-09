@@ -24,15 +24,9 @@ class Trainer:
         self.device = set_device(cfg.device)
 
         # setup envs
-        try:
-            self.train_env = gym.make(cfg.task)
-            self.eval_env = gym.make(cfg.task)
-        except:
-            from spectralrl.env.state import make_dmc
-            self.train_env = make_dmc(cfg.task)
-            self.eval_env = make_dmc(cfg.task)
-        self.train_env.seed(cfg.seed)
-        self.eval_env.seed(cfg.seed)
+        from spectralrl.env.state import make_dmc
+        self.train_env = make_dmc(cfg.task, seed=cfg.seed)
+        self.eval_env = make_dmc(cfg.task, seed=cfg.seed)
         self.max_episode_length = getattr(self.train_env, "_max_episode_steps")
 
         # setup buffer

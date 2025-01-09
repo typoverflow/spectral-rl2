@@ -1,8 +1,8 @@
 import gym
-from gym.envs.registration import register
+import numpy as np
 from dm_control import suite
 from dm_env import specs
-import numpy as np
+from gym.envs.registration import register
 
 
 def _spec_to_box(spec, dtype):
@@ -87,12 +87,12 @@ class DMCWrapper(gym.core.Env):
                 self._env.observation_spec().values(),
                 np.float64
             )
-            
+
         self._state_space = _spec_to_box(
             self._env.observation_spec().values(),
             np.float64
         )
-        
+
         self.current_state = None
 
         # set seed
@@ -178,8 +178,7 @@ class DMCWrapper(gym.core.Env):
         )
 
 def make_dmc(
-        domain_name,
-        task_name,
+        task,
         seed=1,
         visualize_reward=True,
         from_pixels=False,
@@ -192,7 +191,8 @@ def make_dmc(
         time_limit=None,
         channels_first=True
 ):
-    env_id = '%s-%s' % (domain_name, task_name)
+    domain_name, task_name = task.split('-')
+    env_id = task
 
     if from_pixels:
         assert not visualize_reward, 'cannot use visualize reward when learning from pixels'
