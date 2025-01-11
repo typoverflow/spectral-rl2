@@ -4,7 +4,7 @@ import numpy as np
 from omegaconf import DictConfig, OmegaConf
 from tqdm import trange
 
-from spectralrl.algo.state import SAC, Ctrl_SAC, LVRep_SAC, Speder_SAC
+from spectralrl.algo.state import SAC, TD3, Ctrl_SAC, LVRep_SAC, Speder_SAC
 from spectralrl.buffer.state import ReplayBuffer
 from spectralrl.utils.logger import TensorboardLogger
 from spectralrl.utils.utils import set_device, set_seed_everywhere
@@ -25,8 +25,9 @@ class Trainer:
 
         # setup envs
         from spectralrl.env.state import make_dmc
-        self.train_env = make_dmc(cfg.task, seed=cfg.seed)
-        self.eval_env = make_dmc(cfg.task, seed=cfg.seed)
+        self.train_env = make_dmc(cfg.task, seed=cfg.seed, frame_skip=cfg.frame_skip)
+        self.eval_env = make_dmc(cfg.task, seed=cfg.seed, frame_skip=cfg.frame_skip)
+        self.frame_skip = cfg.frame_skip
         self.max_episode_length = getattr(self.train_env, "_max_episode_steps")
 
         # setup buffer
@@ -41,7 +42,8 @@ class Trainer:
             "sac": SAC,
             "lvrep_sac": LVRep_SAC,
             "ctrl_sac": Ctrl_SAC,
-            "speder_sac": Speder_SAC
+            "speder_sac": Speder_SAC,
+            "td3": TD3
         }.get(cfg.algo.cls)
         self.agent = algo_cls(
             self.train_env.observation_space.shape[0],
@@ -53,13 +55,17 @@ class Trainer:
         self.global_step = 0
         self.global_episode = 0
 
+    @property
+    def global_frame(self):
+        return self.global_step * self.frame_skip
+
     def train(self):
         cfg = self.cfg
 
         ep_length, ep_return = 0, 0
         obs = self.train_env.reset()
-        for t in trange(int(cfg.train_steps+1), desc="main"):
-            if t < cfg.random_steps:
+        for t in trange(int(cfg.train_frames // self.frame_skip + 1), desc="main"):
+            if self.global_frame < cfg.random_frames:
                 action = self.train_env.action_space.sample()
             else:
                 action = self.agent.select_action(obs, self.global_step, deterministic=False)
@@ -79,20 +85,20 @@ class Trainer:
                 self.logger.log_scalars("", {
                     "rollout/episode_return": ep_return,
                     "rollout/episode_length": ep_length
-                }, step=self.global_step)
+                }, step=self.global_frame)
                 ep_length = ep_return = 0
 
-            if t < cfg.warmup_steps:
+            if self.global_frame < cfg.warmup_frames:
                 train_metrics = {}
             else:
                 train_metrics = self.agent.train_step(self.buffer, cfg.batch_size)
 
-            if t % cfg.log_interval == 0:
-                self.logger.log_scalars("", train_metrics, step=self.global_step)
+            if self.global_frame % cfg.log_frames == 0:
+                self.logger.log_scalars("", train_metrics, step=self.global_frame)
 
-            if t % cfg.eval_interval == 0:
+            if self.global_frame % cfg.eval_frames == 0:
                 eval_metrics = self.evaluate()
-                self.logger.log_scalars("eval", eval_metrics, step=self.global_step)
+                self.logger.log_scalars("eval", eval_metrics, step=self.global_frame)
 
             self.global_step += 1
 

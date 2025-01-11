@@ -293,3 +293,127 @@ class SquashedGaussianActor(GaussianActor):
         dist = SquashedNormal(mean, logstd.exp())
         info = {"dist": dist} if return_dist else False
         return dist.log_prob(action).sum(-1, keepdim=True), info
+
+
+class DeterministicActor(BaseActor):
+    """
+    Deterministic Actor, which maps the given obs to a deterministic action.
+
+    Parameters
+    ----------
+    input_dim :  The dimensions of input (the output of backend module).
+    output_dim :  The dimension of actor's output.
+    device :  The device which the model runs on. Default is cpu.
+    ***(any args of MLP or EnsembleMLP)
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        output_dim: int,
+        device: Union[str, int, torch.device]="cpu",
+        *,
+        ensemble_size: int = 1,
+        hidden_dims: Sequence[int] = [],
+        norm_layer: Optional[Union[ModuleType, Sequence[ModuleType]]] = None,
+        activation: Optional[Union[ModuleType, Sequence[ModuleType]]] = nn.ReLU,
+        dropout: Optional[Union[float, Sequence[float]]] = None,
+        share_hidden_layer: Union[Sequence[bool], bool] = False,
+    ) -> None:
+        super().__init__()
+        self.actor_type = "DeterministicActor"
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        self.hidden_dims = hidden_dims.copy()
+        self.device = device
+
+        if isinstance(hidden_dims, int):
+            hidden_dims = [hidden_dims]
+        if ensemble_size == 1:
+            self.output_layer = MLP(
+                input_dim = input_dim,
+                output_dim = output_dim,
+                hidden_dims = hidden_dims,
+                norm_layer = norm_layer,
+                activation = activation,
+                dropout = dropout,
+                device = device
+            )
+        elif isinstance(ensemble_size, int) and ensemble_size > 1:
+            self.output_layer = EnsembleMLP(
+                input_dim = input_dim,
+                output_dim = output_dim,
+                hidden_dims = hidden_dims,
+                norm_layer = norm_layer,
+                activation = activation,
+                dropout = dropout,
+                device = device,
+                ensemble_size = ensemble_size,
+                share_hidden_layer = share_hidden_layer
+            )
+        else:
+            raise ValueError(f"ensemble size should be int >= 1.")
+
+    def forward(self, input: torch.Tensor):
+        return self.output_layer(input)
+
+    def sample(self, obs: torch.Tensor, *args, **kwargs) -> Tuple[torch.Tensor, torch.Tensor, Dict]:
+        """Sampling procedure, note that in DeterministicActor we don't do any operation on the sample.
+
+        Parameters
+        ----------
+        obs :  The observation, should be torch.Tensor.
+
+        Returns
+        -------
+        (torch.Tensor, torch.Tensor, Dict) :  The sampled action, logprob and info dict.
+        """
+        return self(obs), None, {}
+
+    def evaluate(self, *args, **kwargs) -> Any:
+        """
+        Evaluate the log_prob of the action. Note that this actor does not support evaluation.
+        """
+        raise NotImplementedError("Evaluation shouldn't be called for DeterministicActor.")
+
+
+class SquashedDeterministicActor(DeterministicActor):
+    """
+    Squashed Deterministic Actor, which maps the given obs to a deterministic action squashed into [-1, 1] by tanh.
+
+    Parameters
+    ----------
+    input_dim :  The dimensions of input (the output of backend module).
+    output_dim :  The dimension of actor's output.
+    device :  The device which the model runs on. Default is cpu.
+    ***(any args of MLP or EnsembleMLP)
+    """
+    def __init__(
+        self,
+        input_dim: int,
+        output_dim: int,
+        device: Union[str, int, torch.device]="cpu",
+        *,
+        ensemble_size: int = 1,
+        hidden_dims: Union[int, Sequence[int]]=[],
+        norm_layer: Optional[Union[ModuleType, Sequence[ModuleType]]] = None,
+        activation: Optional[Union[ModuleType, Sequence[ModuleType]]] = nn.ReLU,
+        dropout: Optional[Union[float, Sequence[float]]] = None,
+        share_hidden_layer: Union[Sequence[bool], bool] = False,
+    ) -> None:
+        super().__init__(input_dim, output_dim, device, ensemble_size=ensemble_size, hidden_dims=hidden_dims, norm_layer=norm_layer, activation=activation, dropout=dropout, share_hidden_layer=share_hidden_layer)
+        self.actor_type = "SqushedDeterministicActor"
+
+    def sample(self, obs: torch.Tensor, *args, **kwargs) -> Tuple[torch.Tensor, torch.Tensor, Dict]:
+        """Sampling procedure. The action is squashed into [-1, 1] by tanh.
+
+        Parameters
+        ----------
+        obs :  The observation, should be torch.Tensor.
+
+        Returns
+        -------
+        (torch.Tensor, torch.Tensor, Dict) :  The sampled action, logprob and info dict.
+        """
+        action_prev_tanh = super().forward(obs)
+        return torch.tanh(action_prev_tanh), None, {}
