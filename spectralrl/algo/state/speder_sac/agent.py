@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from spectralrl.algo.state.ctrl_sac.agent import Ctrl_SAC
+from spectralrl.algo.state.ctrl.agent import Ctrl_SAC, Ctrl_TD3
 from spectralrl.utils.utils import convert_to_tensor, make_target, sync_target
 
 
