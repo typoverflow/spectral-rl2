@@ -297,7 +297,7 @@ class Ctrl_TD3(TD3):
     def critic_step(self, obs, action, next_obs, reward, terminal, z_phi=None):
         with torch.no_grad():
             noise = (torch.randn_like(action) * self.target_policy_noise).clip(-self.noise_clip, self.noise_clip)
-            next_action = (self.actor_target.sample(next_obs)[0] + noise).clamp(-1.0, 1.0)
+            next_action = (self.actor_target.sample(next_obs)[0] + noise).clip(-1.0, 1.0)
             next_feature = self.get_feature(next_obs, next_action, use_target=True)
             q_target = self.critic_target(next_feature).min(0)[0]
             q_target = reward + self.discount * (1 - terminal) * q_target
