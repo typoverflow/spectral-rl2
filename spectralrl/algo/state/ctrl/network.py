@@ -61,15 +61,16 @@ class RFFLayer(nn.Module):
         super().__init__()
         self.learnable = learnable
         if learnable:
-            self.layer = nn.Linear(feature_dim, hidden_dim)
+            self.layer = nn.Linear(feature_dim, hidden_dim//2)
         else:
             self.register_buffer("noise", torch.randn([feature_dim, hidden_dim], requires_grad=False))
 
     def forward(self, x):
         if self.learnable:
-            return torch.sin(self.layer(x))
+            x = self.layer(x)
+            return torch.concat([torch.sin(x), torch.cos(x)], dim=-1)
         else:
-            return torch.sin(self.la)
+            return torch.sin(x @ self.noise)
 
 
 class RFFCritic(nn.Module):
