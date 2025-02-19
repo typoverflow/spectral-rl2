@@ -2,7 +2,7 @@ cls: ctrl_td3
 discount: 0.99
 
 tau: 1.0 # hard update
-actor_update_freq: 2
+actor_update_freq: 1
 target_update_freq: 250
 
 critic_hidden_dims: [512, 512, 512] # this is actually not used
@@ -17,7 +17,7 @@ exploration_noise: 0.2
 
 # below are params specific to ctrl_td3
 feature_dim: 512
-feature_lr: 0.0003
+feature_lr: 0.0001
 phi_hidden_dims: [512, 512]
 mu_hidden_dims: [512, 512]
 theta_hidden_dims: [512, ]

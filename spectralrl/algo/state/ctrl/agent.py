@@ -218,7 +218,7 @@ class Ctrl_TD3(TD3):
             input_dim=self.obs_dim,
             output_dim=self.action_dim,
             hidden_dims=cfg.actor_hidden_dims,
-            activation=nn.ELU,
+            # activation=nn.ELU,
             norm_layer=nn.LayerNorm,
         ).to(self.device)
         self.critic = RFFCritic(

@@ -5,6 +5,11 @@ import torch.nn.functional as F
 from spectralrl.module.net.mlp import MLP
 
 
+class Sin(nn.Module):
+    def forward(self, x):
+        return torch.sin(x)
+    
+    
 class Phi(nn.Module):
     def __init__(
         self,
@@ -38,19 +43,6 @@ class Mu(nn.Module):
         return out
 
 
-class Theta(nn.Module):
-    def __init__(
-        self,
-        feature_dim,
-        hidden_dims,
-    ) -> None:
-        super().__init__()
-        self.mlp = MLP(feature_dim, 1, hidden_dims, activation=nn.ELU, norm_layer=nn.LayerNorm)
-
-    def forward(self, feature):
-        return self.mlp(feature)
-
-
 class RFFCritic(nn.Module):
     def __init__(self,
         feature_dim: int,
@@ -59,11 +51,15 @@ class RFFCritic(nn.Module):
         super().__init__()
         self.ln = nn.LayerNorm(feature_dim)
         self.l1 = nn.Linear(feature_dim, hidden_dim)
+        self.ln1 = nn.LayerNorm(hidden_dim)
         self.l2 = nn.Linear(hidden_dim, hidden_dim)
+        self.ln2 = nn.LayerNorm(hidden_dim)
         self.l3 = nn.Linear(hidden_dim, 1)
 
         self.l4 = nn.Linear(feature_dim, hidden_dim)
+        self.ln4 = nn.LayerNorm(hidden_dim)
         self.l5 = nn.Linear(hidden_dim, hidden_dim)
+        self.ln5 = nn.LayerNorm(hidden_dim)
         self.l6 = nn.Linear(hidden_dim, 1)
 
     def forward(self, x, return_feature=False):
@@ -74,9 +70,9 @@ class RFFCritic(nn.Module):
 
     def forward_feature(self, x):
         x = self.ln(x)
-        q1 = torch.sin(self.l1(x))
-        q1 = torch.nn.functional.elu(self.l2(q1))
+        q1 = torch.sin(self.ln1(self.l1(x)))
+        q1 = torch.nn.functional.elu(self.ln2(self.l2(q1)))
 
-        q2 = torch.sin(self.l4(x))
-        q2 = torch.nn.functional.elu(self.l5(q2))
+        q2 = torch.sin(self.ln4(self.l4(x)))
+        q2 = torch.nn.functional.elu(self.ln5(self.l5(q2)))
         return q1, q2
