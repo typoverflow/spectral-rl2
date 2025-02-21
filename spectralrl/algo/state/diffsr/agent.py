@@ -4,8 +4,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from spectralrl.algo.state.ctrl.network import Mu, Phi, RFFCritic, Theta
 from spectralrl.algo.state.diffsr.ddpm import DDPM
+from spectralrl.algo.state.diffsr.network import RFFCritic
 from spectralrl.algo.state.td3.agent import TD3
 from spectralrl.module.actor import SquashedDeterministicActor, SquashedGaussianActor
 from spectralrl.utils.utils import convert_to_tensor, make_target, sync_target
@@ -24,6 +24,7 @@ class DiffSR_TD3(TD3):
         self.feature_update_ratio = cfg.feature_update_ratio
         self.back_critic_grad = cfg.back_critic_grad
         self.critic_coef = cfg.critic_coef
+        self.reward_coef = cfg.reward_coef
 
         # diffusion
         self.diffusion = DDPM(
@@ -64,7 +65,7 @@ class DiffSR_TD3(TD3):
             obs, action, next_obs, reward, terminal = [
                 convert_to_tensor(b, self.device) for b in itemgetter("obs", "action", "next_obs", "reward", "terminal")(batch)
             ]
-            diffusion_loss, diffusion_metrics = self.diffusion_step(obs, action, next_obs)
+            diffusion_loss, reward_loss, diffusion_metrics = self.diffusion_step(obs, action, next_obs, reward)
             tot_metrics.update(diffusion_metrics)
 
             critic_loss, critic_metrics = self.critic_step(obs, action, next_obs, reward, terminal)
@@ -72,7 +73,7 @@ class DiffSR_TD3(TD3):
 
             self.diffusion_optim.zero_grad()
             self.critic_optim.zero_grad()
-            (diffusion_loss + self.critic_coef * critic_loss).backward()
+            (diffusion_loss + self.reward_coef * reward_loss + self.critic_coef * critic_loss).backward()
             self.critic_optim.step()
             self.diffusion_optim.step()
 
@@ -89,13 +90,19 @@ class DiffSR_TD3(TD3):
         self._step += 1
         return tot_metrics
 
-    def diffusion_step(self, obs, action, next_obs):
-        diffusion_loss, stats = self.diffusion.compute_loss(next_obs, obs, action)
+    def diffusion_step(self, obs, action, next_obs, reward):
+        diffusion_loss, reward_loss, stats = self.diffusion.compute_loss(
+            next_obs,
+            obs,
+            action,
+            reward if self.reward_coef > 0 else None
+        )
         metrics = {
-            "loss/diffusion_loss": diffusion_loss.item()
+            "loss/diffusion_loss": diffusion_loss.item(),
+            "loss/reward_loss": reward_loss.item()
         }
         metrics.update(stats)
-        return diffusion_loss, metrics
+        return diffusion_loss, reward_loss, metrics
 
     def critic_step(self, obs, action, next_obs, reward, terminal):
         with torch.no_grad():

@@ -191,7 +191,7 @@ def make_dmc(
         time_limit=None,
         channels_first=True
 ):
-    domain_name, task_name = task.split('-')
+    domain_name, task_name = task.split('-', 1)
     env_id = task
 
     if from_pixels:

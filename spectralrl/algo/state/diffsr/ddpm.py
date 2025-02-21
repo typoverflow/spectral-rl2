@@ -7,6 +7,7 @@ import torch.nn.functional as F
 
 from spectralrl.utils.utils import at_least_ndim
 
+from .network import RFFReward
 from .nn_idql import IDQLFactorizedScoreNet, IDQLScoreNet
 
 
@@ -86,6 +87,10 @@ class DDPM(nn.Module):
                 label_dropout=args.label_dropout,
                 continuous=False,
             )
+            self.reward = RFFReward(
+                feature_dim=args.feature_dim,
+                hidden_dim=args.reward_hidden_dim,
+            )
         else:
             self.score = IDQLScoreNet(
                 latent_dim=self.state_dim,
@@ -116,18 +121,23 @@ class DDPM(nn.Module):
             score = self.score.forward(xt, t, state, action)
             return score
 
-    def compute_loss(self, x0, state, action):
+    def compute_loss(self, x0, state, action, reward):
         xt, t, eps = self.add_noise(x0)
         alphabars = self.alphabars[t]
-        model_out = self.forward(xt, t.unsqueeze(-1), state, action)
-        # loss = (model_out * (1-alphabars).sqrt() + eps).pow(2).sum(-1).mean()
-        loss = (model_out - eps).pow(2).sum(-1).mean()  # use eps-prediction for improved performance
+        psi = self.score.forward_psi(state, action)
+        score = self.score.forward_score(xt, t.unsqueeze(-1), psi=psi)
+        diffusion_loss = (score - eps).pow(2).sum(-1).mean()  # use eps-prediction for improved performance
+        if reward is not None:
+            reward_pred = self.reward.forward(psi)
+            reward_loss = (reward_pred - reward).pow(2).sum(-1).mean()
+        else:
+            reward_loss = 0.0
         stats = ({
-            "info/score_l1_norm": model_out.abs().mean(),
-            "info/left_l1_norm": (model_out * (1-alphabars).sqrt()).abs().mean(),
+            "info/score_l1_norm": score.abs().mean(),
+            "info/left_l1_norm": (score * (1-alphabars).sqrt()).abs().mean(),
             "info/eps_l1_norm": eps.abs().mean()
         })
-        return loss, stats
+        return diffusion_loss, reward_loss, stats
 
     def sample(
         self,
