@@ -16,7 +16,6 @@ noise_clip: 0.3
 exploration_noise: 0.2
 
 # below are params specific to diffsr_td3
-factorized: true
 x_min: -10.0
 x_max: 10.0
 sample_steps: 50
@@ -26,20 +25,23 @@ s: 0.008
 noise_schedule: vp
 
 feature_update_ratio: 1
-feature_dim: 256
+feature_dim: 512
+latent_dim: 256
 embed_dim: 128
-frame_stack: 1
-psi_hidden_dim: 128
-psi_hidden_depth: 2
-zeta_hidden_dim: 128
-zeta_hidden_depth: 2
-score_dropout: null
-label_dropout: null
+psi_hidden_dims: [256, 256]
+zeta_hidden_dims: [256, 256]
+critic_hidden_dim: 1024
+reward_hidden_dim: 1024
+encoder_hidden_dims: [256, 256]
+decoder_hidden_dims: [256, 256]
 
+vae_lr: 0.0003
 diffusion_lr: 0.0003
 
-reward_coef: 0.0
+use_latent: false
+recon_coef: 1.0
+kl_coef: 1.0
+diffusion_coef: 1.0
+reward_coef: 0.1
 critic_coef: 1.0
-critic_hidden_dim: 512
-reward_hidden_dim: 512
 back_critic_grad: false

@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from spectralrl.utils.utils import at_least_ndim
 
 from .network import RFFReward
-from .nn_idql import IDQLFactorizedScoreNet, IDQLScoreNet
+from .nn_idql import IDQLFactorizedScoreNet, IDQLScoreNet, MLPResNet, PositionalFeature
 
 
 # ================= noise schedules =================
@@ -53,15 +53,16 @@ def generate_noise_schedule(
 
 
 class DDPM(nn.Module):
-    def __init__(self, args, state_dim, action_dim, device):
+    def __init__(self, cfg, state_dim, action_dim, device):
         super().__init__()
         self.device = device
         self.state_dim = state_dim
         self.action_dim = action_dim
-        self.sample_steps = args.sample_steps
-        self.x_min, self.x_max = args.x_min, args.x_max
+        self.feature_dim = cfg.feature_dim
+        self.sample_steps = cfg.sample_steps
+        self.x_min, self.x_max = cfg.x_min, cfg.x_max
         self.betas, self.alphas, self.alphabars = generate_noise_schedule(
-            args.noise_schedule, args.sample_steps, args.beta_min, args.beta_max, args.s
+            cfg.noise_schedule, cfg.sample_steps, cfg.beta_min, cfg.beta_max, cfg.s
         )
         self.alphabars_prev = F.pad(self.alphabars[:-1], (1, 0), value=1.0)
 
@@ -71,38 +72,44 @@ class DDPM(nn.Module):
             self.alphabars[..., None].to(self.device), \
             self.alphabars_prev[..., None].to(self.device)
 
-        self.factorized = args.factorized
-        if self.factorized:
-            self.score = IDQLFactorizedScoreNet(
-                latent_dim=self.state_dim,
-                action_dim=self.action_dim,
-                feature_dim=args.feature_dim,
-                embed_dim=args.embed_dim,
-                frame_stack=args.frame_stack,
-                psi_hidden_depth=args.psi_hidden_depth,
-                psi_hidden_dim=args.psi_hidden_dim,
-                zeta_hidden_depth=args.zeta_hidden_depth,
-                zeta_hidden_dim=args.zeta_hidden_dim,
-                score_dropout=args.score_dropout,
-                label_dropout=args.label_dropout,
-                continuous=False,
-            )
-            self.reward = RFFReward(
-                feature_dim=args.feature_dim,
-                hidden_dim=args.reward_hidden_dim,
-            )
-        else:
-            self.score = IDQLScoreNet(
-                latent_dim=self.state_dim,
-                action_dim=self.action_dim,
-                embed_dim=args.embed_dim,
-                hidden_depth=args.zeta_hidden_depth,
-                hidden_dim=args.zeta_hidden_dim,
-                frame_stack=args.frame_stack,
-                score_dropout=args.score_dropout,
-                conditional=True,
-                continuous=False
-            )
+        self.mlp_s = nn.Sequential(
+            nn.Linear(state_dim, cfg.embed_dim*2),
+            nn.Mish(),
+            nn.Linear(cfg.embed_dim*2, cfg.embed_dim),
+        )
+        self.mlp_a = nn.Sequential(
+            nn.Linear(action_dim, cfg.embed_dim*2),
+            nn.Mish(),
+            nn.Linear(cfg.embed_dim*2, cfg.embed_dim),
+        )
+        self.mlp_t = nn.Sequential(
+            PositionalFeature(cfg.embed_dim),
+            nn.Linear(cfg.embed_dim, cfg.embed_dim*2),
+            nn.Mish(),
+            nn.Linear(cfg.embed_dim*2, cfg.embed_dim),
+        )
+        self.mlp_psi = MLPResNet(
+            num_blocks=len(cfg.psi_hidden_dims),
+            input_dim=cfg.embed_dim*2,
+            out_dim=cfg.feature_dim,
+            dropout_rate=None,
+            use_layer_norm=True,
+            hidden_dim=cfg.psi_hidden_dims[0],
+            activations=nn.Mish()
+        )
+        self.mlp_zeta = MLPResNet(
+            num_blocks=len(cfg.zeta_hidden_dims),
+            input_dim=state_dim+cfg.embed_dim,
+            out_dim=state_dim*cfg.feature_dim,
+            dropout_rate=None,
+            use_layer_norm=True,
+            hidden_dim=cfg.zeta_hidden_dims[0],
+            activations=nn.Mish()
+        )
+        self.reward = RFFReward(
+            feature_dim=cfg.feature_dim,
+            hidden_dim=cfg.reward_hidden_dim,
+        )
 
     def add_noise(self, x0):
         noise_idx = torch.randint(0, self.sample_steps, (x0.shape[0], )).to(self.device)
@@ -111,31 +118,26 @@ class DDPM(nn.Module):
         xt = alphabars.sqrt() * x0 + (1 - alphabars).sqrt() * eps
         return xt, noise_idx, eps
 
-    def forward(self, xt, t, state, action, psi=None):
-        if self.factorized:
-            if psi is None:
-                psi = self.score.forward_psi(state, action)
-            score = self.score.forward_score(xt, t, psi=psi)
-            return score
-        else:
-            score = self.score.forward(xt, t, state, action)
-            return score
-
-    def compute_loss(self, x0, state, action, reward):
+    def compute_loss(self, next_state, state, action, reward):
+        x0 = next_state
         xt, t, eps = self.add_noise(x0)
         alphabars = self.alphabars[t]
-        psi = self.score.forward_psi(state, action)
-        score = self.score.forward_score(xt, t.unsqueeze(-1), psi=psi)
-        diffusion_loss = (score - eps).pow(2).sum(-1).mean()  # use eps-prediction for improved performance
+
+        z_psi = self.forward_psi(s=state, a=action)
+        z_zeta = self.forward_zeta(sp=xt.detach(), t=t.unsqueeze(-1))
+        score = self.forward_score(z_psi=z_psi, z_zeta=z_zeta)
+        diffusion_loss = (score - eps).pow(2).sum(-1).mean()
         if reward is not None:
-            reward_pred = self.reward.forward(psi)
+            reward_pred = self.reward.forward(z_psi)
             reward_loss = (reward_pred - reward).pow(2).sum(-1).mean()
         else:
-            reward_loss = 0.0
+            reward_loss = torch.tensor(0.0)
         stats = ({
+            "info/x0_l1_norm": x0.abs().mean(),
+            "info/eps_l1_norm": eps.abs().mean(),
             "info/score_l1_norm": score.abs().mean(),
-            "info/left_l1_norm": (score * (1-alphabars).sqrt()).abs().mean(),
-            "info/eps_l1_norm": eps.abs().mean()
+            "info/x0_mean": x0.mean(),
+            "info/x0_std": x0.std(0).mean(),
         })
         return diffusion_loss, reward_loss, stats
 
@@ -175,3 +177,24 @@ class DDPM(nn.Module):
             xt = next_xt
 
         return xt, info
+
+    def forward_psi(self, s, a):
+        s_ff = self.mlp_s(s)
+        a_ff = self.mlp_a(a)
+        x = torch.concat([s_ff, a_ff], dim=-1)
+        x = self.mlp_psi(x)
+        return x
+
+    def forward_zeta(self, sp, t):
+        t_ff = self.mlp_t(t)
+        all = torch.concat([sp, t_ff], dim=-1)
+        all = self.mlp_zeta(all)
+        return all.reshape(-1, self.feature_dim, self.state_dim)
+
+    def forward_score(self, s=None, a=None, sp=None, t=None, z_psi=None, z_zeta=None):
+        if z_psi is None:
+            z_psi = self.forward_psi(s=s, a=a)
+        if z_zeta is None:
+            z_zeta = self.forward_zeta(sp=sp, t=t)
+        score = torch.bmm(z_psi.unsqueeze(1), z_zeta).squeeze(1)
+        return score
