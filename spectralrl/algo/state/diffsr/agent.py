@@ -6,6 +6,10 @@ import torch.nn.functional as F
 
 from spectralrl.algo.state.diffsr.ddpm import DDPM
 from spectralrl.algo.state.diffsr.network import RFFCritic
+from spectralrl.algo.state.diffsr.normalization import (
+    DummyNormalizer,
+    RunningMeanStdNormalizer,
+)
 from spectralrl.algo.state.diffsr.vae import VAE
 from spectralrl.algo.state.td3.agent import TD3
 from spectralrl.module.actor import SquashedDeterministicActor, SquashedGaussianActor
@@ -71,6 +75,11 @@ class DiffSR_TD3(TD3):
         self.actor_optim = torch.optim.Adam(self.actor.parameters(), lr=cfg.actor_lr)
         self.critic_optim = torch.optim.Adam(self.critic.parameters(), lr=cfg.critic_lr)
 
+        if cfg.normalize_obs:
+            self.obs_rms = RunningMeanStdNormalizer(shape=(obs_dim,)).to(self.device)
+        else:
+            self.obs_rms = DummyNormalizer(shape=(obs_dim,)).to(self.device)
+
     def train(self, training):
         super().train(training)
         if self.use_latent:
@@ -78,7 +87,7 @@ class DiffSR_TD3(TD3):
         self.diffusion.train(training)
 
     @torch.no_grad()
-    def select_action(self, obs, step, deterministic=False):
+    def select_action(self, obs, step=None, deterministic=False):
         obs = torch.as_tensor(obs, dtype=torch.float32, device=self.device)[None, ...]
         if self.use_latent:
             latent, _ = self.vae(obs, sample_posterior=False, forward_decoder=False)
@@ -88,6 +97,9 @@ class DiffSR_TD3(TD3):
         if not deterministic:
             action = action + self.exploration_noise * torch.randn_like(action)
             action = action.clip(-1.0, 1.0)
+        if step is not None:
+            # meaning that we are training
+            self.obs_rms.update(obs)
         return action.squeeze(0).detach().cpu().numpy()
 
     def train_step(self, buffer, batch_size):
@@ -98,6 +110,8 @@ class DiffSR_TD3(TD3):
             obs, action, next_obs, reward, terminal = [
                 convert_to_tensor(b, self.device) for b in itemgetter("obs", "action", "next_obs", "reward", "terminal")(batch)
             ]
+            obs = self.obs_rms.normalize(obs)
+            next_obs = self.obs_rms.normalize(next_obs)
             recon_loss, kl_loss, diffusion_loss, reward_loss, metrics, latent, next_latent = \
                 self.feature_step(obs, action, next_obs, reward)
             tot_metrics.update(metrics)

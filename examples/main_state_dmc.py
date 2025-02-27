@@ -68,10 +68,9 @@ class Trainer:
         ep_length, ep_return = 0, 0
         obs = self.train_env.reset()
         for t in trange(int(cfg.train_frames // self.frame_skip + 1), desc="main"):
+            action = self.agent.select_action(obs, self.global_step, deterministic=False)
             if self.global_frame < cfg.random_frames:
                 action = self.train_env.action_space.sample()
-            else:
-                action = self.agent.select_action(obs, self.global_step, deterministic=False)
 
             next_obs, reward, terminal, info = self.train_env.step(action)
             ep_length += 1
@@ -114,7 +113,7 @@ class Trainer:
             ep_length = ep_return = 0
             terminal = False
             while not terminal:
-                action = self.agent.select_action(obs, self.global_step, deterministic=True)
+                action = self.agent.select_action(obs, None, deterministic=True)
                 obs, reward, terminal, info = self.eval_env.step(action)
                 ep_return += reward
                 ep_length += 1
