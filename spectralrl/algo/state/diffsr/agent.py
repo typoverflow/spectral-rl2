@@ -89,6 +89,11 @@ class DiffSR_TD3(TD3):
     @torch.no_grad()
     def select_action(self, obs, step=None, deterministic=False):
         obs = torch.as_tensor(obs, dtype=torch.float32, device=self.device)[None, ...]
+        if self.normalize_obs:
+            if step is not None:
+                # meaning that we are training
+                self.obs_rms.update(obs)
+            obs = self.obs_rms.normalize(obs)
         if self.use_latent:
             latent, _ = self.vae(obs, sample_posterior=False, forward_decoder=False)
         else:
@@ -97,9 +102,6 @@ class DiffSR_TD3(TD3):
         if not deterministic:
             action = action + self.exploration_noise * torch.randn_like(action)
             action = action.clip(-1.0, 1.0)
-        if step is not None:
-            # meaning that we are training
-            self.obs_rms.update(obs)
         return action.squeeze(0).detach().cpu().numpy()
 
     def train_step(self, buffer, batch_size):
