@@ -34,6 +34,7 @@ class DiffSR_TD3(TD3):
         self.critic_coef = cfg.critic_coef
         self.reward_coef = cfg.reward_coef
         self.use_latent = cfg.use_latent
+        self.normalize_obs = cfg.normalize_obs
 
         # vae
         if self.use_latent:
@@ -75,7 +76,7 @@ class DiffSR_TD3(TD3):
         self.actor_optim = torch.optim.Adam(self.actor.parameters(), lr=cfg.actor_lr)
         self.critic_optim = torch.optim.Adam(self.critic.parameters(), lr=cfg.critic_lr)
 
-        if cfg.normalize_obs:
+        if self.normalize_obs:
             self.obs_rms = RunningMeanStdNormalizer(shape=(obs_dim,)).to(self.device)
         else:
             self.obs_rms = DummyNormalizer(shape=(obs_dim,)).to(self.device)
