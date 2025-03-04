@@ -67,6 +67,7 @@ class Encoder(MLPEncDec):
         obs_dim: int,
         action_dim: int,
         hidden_dims: Sequence[int] = [],
+        norm_layer: Optional[Union[nn.Module, Sequence[nn.Module]]] = nn.LayerNorm,
         activation: Optional[Union[nn.Module, Sequence[nn.Module]]] = nn.ReLU,
     ):
         super().__init__(
@@ -74,6 +75,7 @@ class Encoder(MLPEncDec):
             output_dim=feature_dim,
             hidden_dims=hidden_dims,
             deterministic=False,
+            norm_layer=norm_layer,
             activation=activation,
         )
 
@@ -104,6 +106,7 @@ class Decoder(MLPEncDec):
         feature_dim: int,
         obs_dim: int,
         hidden_dims: Sequence[int] = [],
+        norm_layer: Optional[Union[nn.Module, Sequence[nn.Module]]] = nn.LayerNorm,
         activation: Optional[Union[nn.Module, Sequence[nn.Module]]] = nn.ReLU,
     ) -> None:
         super().__init__(
@@ -111,6 +114,7 @@ class Decoder(MLPEncDec):
             output_dim=obs_dim+1,
             hidden_dims=hidden_dims,
             deterministic=True,
+            norm_layer=norm_layer,
             activation=activation
         )
 
@@ -129,6 +133,7 @@ class GaussianFeature(MLPEncDec):
         obs_dim: int,
         action_dim: int,
         hidden_dims: Sequence[int] = [],
+        norm_layer: Optional[Union[nn.Module, Sequence[nn.Module]]] = nn.LayerNorm,
         activation: Optional[Union[nn.Module, Sequence[nn.Module]]] = nn.ReLU,
     ):
         super().__init__(
@@ -136,6 +141,7 @@ class GaussianFeature(MLPEncDec):
             output_dim=feature_dim,
             hidden_dims=hidden_dims,
             deterministic=False,
+            norm_layer=norm_layer,
             activation=activation,
         )
 
@@ -172,30 +178,46 @@ class RFFCritic(nn.Module):
         self.num_noise = num_noise
         self.register_buffer("noise", torch.randn([self.num_noise, feature_dim], requires_grad=False, device=device))
 
-        # Q1
-        self.l1 = nn.Linear(feature_dim, hidden_dim) # random feature
-        self.l2 = nn.Linear(hidden_dim, hidden_dim)
-        self.l3 = nn.Linear(hidden_dim, 1)
+        self.net1 = nn.Sequential(
+            nn.Linear(feature_dim, 1),
+            # nn.LayerNorm(hidden_dim),
+            # nn.ELU(),
+            # nn.Linear(hidden_dim, 1)
+        )
+        self.net2 = nn.Sequential(
+            nn.Linear(feature_dim, 1),
+            # nn.LayerNorm(hidden_dim),
+            # nn.ELU(),
+            # nn.Linear(hidden_dim, 1)
+        )
 
-        # Q2
-        self.l4 = nn.Linear(feature_dim, hidden_dim) # random feature
-        self.l5 = nn.Linear(hidden_dim, hidden_dim)
-        self.l6 = nn.Linear(hidden_dim, 1)
+        # # Q1
+        # self.l1 = nn.Linear(feature_dim, hidden_dim) # random feature
+        # self.l2 = nn.Linear(hidden_dim, hidden_dim)
+        # self.l3 = nn.Linear(hidden_dim, 1)
+
+        # self.l4 = nn.Linear(feature_dim, hidden_dim) # random feature
+        # self.l5 = nn.Linear(hidden_dim, hidden_dim)
+        # self.l6 = nn.Linear(hidden_dim, 1)
 
     def forward(self, mean, logstd):
         std = logstd.exp()
-        B, D = mean.shape
+        # B, D = mean.shape
         x = mean[:, None, :] + std[:, None, :] * self.noise[None, :, :]
-        x = x.reshape(-1, D)
+        # x = x.reshape(-1, D)
 
-        q1 = F.elu(self.l1(x))
-        q1 = q1.reshape([B, self.num_noise, -1]).mean(dim=1)
-        q1 = F.elu(self.l2(q1))
-        q1 = self.l3(q1)
-
-        q2 = F.elu(self.l4(x))
-        q2 = q2.reshape([B, self.num_noise, -1]).mean(dim=1)
-        q2 = F.elu(self.l5(q2))
-        q2 = self.l6(q2)
-
+        q1 = self.net1(x).mean(dim=1)
+        q2 = self.net2(x).mean(dim=1)
         return torch.stack([q1, q2], dim=0)
+
+        # q1 = F.elu(self.l1(x))
+        # q1 = q1.reshape([B, self.num_noise, -1]).mean(dim=1)
+        # q1 = F.elu(self.l2(q1))
+        # q1 = self.l3(q1)
+
+        # q2 = F.elu(self.l4(x))
+        # q2 = q2.reshape([B, self.num_noise, -1]).mean(dim=1)
+        # q2 = F.elu(self.l5(q2))
+        # q2 = self.l6(q2)
+
+        # return torch.stack([q1, q2], dim=0)

@@ -29,26 +29,28 @@ class LVRep_SAC(SAC):
         self.feature_tau = cfg.feature_tau
         self.use_feature_target = cfg.use_feature_target
         self.feature_update_ratio = cfg.feature_update_ratio
-
         self.encoder = Encoder(
             feature_dim=self.feature_dim,
             obs_dim=obs_dim,
             action_dim=action_dim,
             hidden_dims=cfg.encoder_hidden_dims,
-            activation=nn.ReLU,
+            norm_layer=nn.LayerNorm,
+            activation=nn.ELU,
         ).to(self.device)
         self.decoder = Decoder(
             feature_dim=self.feature_dim,
             obs_dim=obs_dim,
             hidden_dims=cfg.decoder_hidden_dims,
-            activation=nn.ReLU,
+            norm_layer=nn.LayerNorm,
+            activation=nn.ELU,
         ).to(self.device)
         self.f = GaussianFeature(
             feature_dim=self.feature_dim,
             obs_dim=obs_dim,
             action_dim=action_dim,
             hidden_dims=cfg.f_hidden_dims,
-            activation=nn.ReLU,
+            norm_layer=nn.LayerNorm,
+            activation=nn.ELU,
         ).to(self.device)
 
         if self.use_feature_target:
@@ -188,20 +190,23 @@ class LVRep_TD3(TD3):
             obs_dim=obs_dim,
             action_dim=action_dim,
             hidden_dims=cfg.encoder_hidden_dims,
-            activation=nn.ReLU,
+            norm_layer=nn.LayerNorm,
+            activation=nn.ELU,
         ).to(self.device)
         self.decoder = Decoder(
             feature_dim=self.feature_dim,
             obs_dim=obs_dim,
             hidden_dims=cfg.decoder_hidden_dims,
-            activation=nn.ReLU,
+            norm_layer=nn.LayerNorm,
+            activation=nn.ELU,
         ).to(self.device)
         self.f = GaussianFeature(
             feature_dim=self.feature_dim,
             obs_dim=obs_dim,
             action_dim=action_dim,
             hidden_dims=cfg.f_hidden_dims,
-            activation=nn.ReLU,
+            norm_layer=nn.LayerNorm,
+            activation=nn.ELU,
         ).to(self.device)
 
         if self.use_feature_target:
@@ -212,12 +217,12 @@ class LVRep_TD3(TD3):
             [*self.encoder.parameters(), *self.decoder.parameters(), *self.f.parameters()],
             lr=cfg.feature_lr
         )
+
         # rl networks
         self.actor = SquashedDeterministicActor(
             input_dim=self.obs_dim,
             output_dim=self.action_dim,
             hidden_dims=cfg.actor_hidden_dims,
-            activation=nn.ELU,
             norm_layer=nn.LayerNorm
         ).to(self.device)
         self.critic = RFFCritic(
@@ -227,6 +232,7 @@ class LVRep_TD3(TD3):
         ).to(self.device)
         self.actor_target = make_target(self.actor)
         self.critic_target = make_target(self.critic)
+
         self.actor_optim = torch.optim.Adam(self.actor.parameters(), lr=cfg.actor_lr)
         self.critic_optim = torch.optim.Adam(self.critic.parameters(), lr=cfg.critic_lr)
 

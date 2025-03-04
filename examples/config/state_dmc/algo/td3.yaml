@@ -1,9 +1,9 @@
 cls: td3
 discount: 0.99
 
-tau: 1.0 # hard update
+tau: 0.005 # hard update
 actor_update_freq: 1
-target_update_freq: 250
+target_update_freq: 1
 
 critic_hidden_dims: [512, 512, 512]
 actor_hidden_dims: [512, 512, 512]
