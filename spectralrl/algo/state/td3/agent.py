@@ -6,6 +6,7 @@ import torch.nn as nn
 from spectralrl.algo.state.base import BaseStateAlgorithm
 from spectralrl.module.actor import SquashedDeterministicActor
 from spectralrl.module.critic import EnsembleQ
+from spectralrl.module.normalize import DummyNormalizer, RunningMeanStdNormalizer
 from spectralrl.utils.utils import convert_to_tensor, make_target, sync_target
 
 
@@ -33,7 +34,6 @@ class TD3(BaseStateAlgorithm):
             input_dim=self.obs_dim,
             output_dim=self.action_dim,
             hidden_dims=cfg.actor_hidden_dims,
-            activation=nn.ELU,
             norm_layer=nn.LayerNorm,
         ).to(self.device)
         self.critic = EnsembleQ(
@@ -49,6 +49,12 @@ class TD3(BaseStateAlgorithm):
         self.actor_optim = torch.optim.Adam(self.actor.parameters(), lr=cfg.actor_lr)
         self.critic_optim = torch.optim.Adam(self.critic.parameters(), lr=cfg.critic_lr)
 
+        self.normalize_obs = cfg.normalize_obs
+        if self.normalize_obs:
+            self.obs_rms = RunningMeanStdNormalizer(shape=(self.obs_dim,)).to(self.device)
+        else:
+            self.obs_rms = DummyNormalizer(shape=(self.obs_dim,)).to(self.device)
+
         self._step = 0
 
     def train(self, training):
@@ -58,6 +64,11 @@ class TD3(BaseStateAlgorithm):
     @torch.no_grad()
     def select_action(self, obs, step, deterministic=False):
         obs = torch.as_tensor(obs, dtype=torch.float32, device=self.device)[None, ...]
+        if self.normalize_obs:
+            if step is not None:
+                # meaning that we are training
+                self.obs_rms.update(obs)
+            obs = self.obs_rms.normalize(obs)
         action, *_ = self.actor.sample(obs, deterministic=deterministic)
         if not deterministic:
             action = action + self.exploration_noise * torch.randn_like(action)
@@ -71,7 +82,8 @@ class TD3(BaseStateAlgorithm):
         obs, action, next_obs, reward, terminal = [
             convert_to_tensor(b, self.device) for b in itemgetter("obs", "action", "next_obs", "reward", "terminal")(batch)
         ]
-
+        obs = self.obs_rms.normalize(obs)
+        next_obs = self.obs_rms.normalize(next_obs)
         critic_loss, critic_metrics = self.critic_step(obs, action, next_obs, reward, terminal)
         tot_metrics.update(critic_metrics)
         self.critic_optim.zero_grad()

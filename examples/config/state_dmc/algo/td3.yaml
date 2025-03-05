@@ -1,7 +1,7 @@
 cls: td3
 discount: 0.99
 
-tau: 0.005 # hard update
+tau: 0.005
 actor_update_freq: 1
 target_update_freq: 1
 
@@ -14,3 +14,4 @@ actor_lr: 0.0003
 target_policy_noise: 0.2
 noise_clip: 0.3
 exploration_noise: 0.2
+normalize_obs: false

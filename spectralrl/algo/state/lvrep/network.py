@@ -166,6 +166,14 @@ class GaussianFeature(MLPEncDec):
                 return s, logprob
 
 
+class Mean(nn.Module):
+    def __init__(self, dim: int):
+        super().__init__()
+        self.dim = dim
+
+    def forward(self, x):
+        return x.mean(dim=self.dim)
+
 class RFFCritic(nn.Module):
     def __init__(
         self,
@@ -179,13 +187,25 @@ class RFFCritic(nn.Module):
         self.register_buffer("noise", torch.randn([self.num_noise, feature_dim], requires_grad=False, device=device))
 
         self.net1 = nn.Sequential(
-            nn.Linear(feature_dim, 1),
+            # nn.Linear(feature_dim, 1),
+            # Mean(dim=1),
+            nn.Linear(feature_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ELU(),
+            nn.Linear(hidden_dim, 1),
+            Mean(dim=1),
             # nn.LayerNorm(hidden_dim),
             # nn.ELU(),
             # nn.Linear(hidden_dim, 1)
         )
         self.net2 = nn.Sequential(
-            nn.Linear(feature_dim, 1),
+            # nn.Linear(feature_dim, 1),
+            # Mean(dim=1),
+            nn.Linear(feature_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ELU(),
+            nn.Linear(hidden_dim, 1),
+            Mean(dim=1),
             # nn.LayerNorm(hidden_dim),
             # nn.ELU(),
             # nn.Linear(hidden_dim, 1)
@@ -206,8 +226,8 @@ class RFFCritic(nn.Module):
         x = mean[:, None, :] + std[:, None, :] * self.noise[None, :, :]
         # x = x.reshape(-1, D)
 
-        q1 = self.net1(x).mean(dim=1)
-        q2 = self.net2(x).mean(dim=1)
+        q1 = self.net1(x)
+        q2 = self.net2(x)
         return torch.stack([q1, q2], dim=0)
 
         # q1 = F.elu(self.l1(x))

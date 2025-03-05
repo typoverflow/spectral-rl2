@@ -14,6 +14,7 @@ actor_lr: 0.0003
 target_policy_noise: 0.2
 noise_clip: 0.3
 exploration_noise: 0.2
+normalize_obs: false
 
 # below are params specific to diffsr_td3
 x_min: -10.0
@@ -39,7 +40,6 @@ vae_lr: 0.0003
 diffusion_lr: 0.0003
 
 use_latent: false
-normalize_obs: false
 recon_coef: 1.0
 kl_coef: 1.0
 diffusion_coef: 1.0

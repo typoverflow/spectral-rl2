@@ -6,13 +6,10 @@ import torch.nn.functional as F
 
 from spectralrl.algo.state.diffsr.ddpm import DDPM
 from spectralrl.algo.state.diffsr.network import RFFCritic
-from spectralrl.algo.state.diffsr.normalization import (
-    DummyNormalizer,
-    RunningMeanStdNormalizer,
-)
 from spectralrl.algo.state.diffsr.vae import VAE
 from spectralrl.algo.state.td3.agent import TD3
 from spectralrl.module.actor import SquashedDeterministicActor, SquashedGaussianActor
+from spectralrl.module.normalize import DummyNormalizer, RunningMeanStdNormalizer
 from spectralrl.utils.utils import convert_to_tensor, make_target, sync_target
 
 
@@ -183,13 +180,13 @@ class DiffSR_TD3(TD3):
         if self.use_latent:
             latent = latent
             next_latent, *_ = self.vae_target(next_obs, sample_posterior=False, forward_decoder=False)
-            feature = self.diffusion.forward_psi(s=latent, a=action)
         else:
             latent = obs
             next_latent = next_obs
+        if self.back_critic_grad:
             feature = self.diffusion.forward_psi(s=latent, a=action)
-        if not self.back_critic_grad:
-            feature = feature.detach()
+        else:
+            feature = self.diffusion_target.forward_psi(s=latent, a=action)
         with torch.no_grad():
             noise = (torch.randn_like(action) * self.target_policy_noise).clip(-self.noise_clip, self.noise_clip)
             next_action = (self.actor_target.sample(next_latent)[0] + noise).clip(-1.0, 1.0)
@@ -208,7 +205,10 @@ class DiffSR_TD3(TD3):
         else:
             latent = obs
         new_action, *_ = self.actor.sample(latent)
-        new_feature = self.diffusion.forward_psi(s=latent, a=new_action)
+        if self.back_critic_grad: # should be consistent to critic training
+            new_feature = self.diffusion.forward_psi(s=latent, a=new_action)
+        else:
+            new_feature = self.diffusion_target.forward_psi(s=latent, a=new_action)
         q_value = self.critic(new_feature)
         actor_loss =  - q_value.mean()
         return actor_loss, {

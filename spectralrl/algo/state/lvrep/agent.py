@@ -13,6 +13,7 @@ from spectralrl.algo.state.lvrep.network import (
 from spectralrl.algo.state.sac.agent import SAC
 from spectralrl.algo.state.td3.agent import TD3
 from spectralrl.module.actor import SquashedDeterministicActor, SquashedGaussianActor
+from spectralrl.module.normalize import DummyNormalizer, RunningMeanStdNormalizer
 from spectralrl.utils.utils import convert_to_tensor, make_target, sync_target
 
 
@@ -236,6 +237,26 @@ class LVRep_TD3(TD3):
         self.actor_optim = torch.optim.Adam(self.actor.parameters(), lr=cfg.actor_lr)
         self.critic_optim = torch.optim.Adam(self.critic.parameters(), lr=cfg.critic_lr)
 
+        self.normalize_obs = cfg.normalize_obs
+        if self.normalize_obs:
+            self.obs_rms = RunningMeanStdNormalizer(shape=(obs_dim,)).to(self.device)
+        else:
+            self.obs_rms = DummyNormalizer(shape=(obs_dim,)).to(self.device)
+
+    @torch.no_grad()
+    def select_action(self, obs, step=None, deterministic=False):
+        obs = torch.as_tensor(obs, dtype=torch.float32, device=self.device)[None, ...]
+        if self.normalize_obs:
+            if step is not None:
+                # meaning that we are training
+                self.obs_rms.update(obs)
+            obs = self.obs_rms.normalize(obs)
+        action, *_ = self.actor.sample(obs, deterministic=deterministic)
+        if not deterministic:
+            action = action + self.exploration_noise * torch.randn_like(action)
+            action = action.clip(-1.0, 1.0)
+        return action.squeeze(0).detach().cpu().numpy()
+
     def train(self, training=True):
         super().train(training)
         self.encoder.train(training)
@@ -250,6 +271,8 @@ class LVRep_TD3(TD3):
             obs, action, next_obs, reward, terminal = [
                 convert_to_tensor(b, self.device) for b in itemgetter("obs", "action", "next_obs", "reward", "terminal")(batch)
             ]
+            obs = self.obs_rms.normalize(obs)
+            next_obs = self.obs_rms.normalize(next_obs)
             feature_loss, feature_metrics = self.feature_step(obs, action, next_obs, reward)
             tot_metrics.update(feature_metrics)
             self.feature_optim.zero_grad()
@@ -280,7 +303,7 @@ class LVRep_TD3(TD3):
         s_prime_pred, r_pred = self.decoder.sample(z)
         s_loss = F.mse_loss(s_prime_pred, next_obs)
         r_loss = F.mse_loss(r_pred, reward)
-        recon_loss = r_loss + s_loss
+        recon_loss = r_loss * 1.0 + s_loss
 
         prior_mean, prior_logstd = self.f(obs, action)
         post_var = (2 * post_logstd).exp()
@@ -292,6 +315,8 @@ class LVRep_TD3(TD3):
             "loss/feature_loss": feature_loss.item(),
             "loss/kl_loss": kl_loss.item(),
             "loss/recon_loss": recon_loss.item(),
+            "misc/post_std": post_logstd.exp().mean().item(),
+            "misc/prior_std": prior_logstd.exp().mean().item(),
         }
 
     def critic_step(self, obs, action, next_obs, reward, terminal):
