@@ -8,7 +8,7 @@ from spectralrl.algo.state.lvrep.network import (
     Decoder,
     Encoder,
     GaussianFeature,
-    RFFCritic,
+    LVRepCritic,
 )
 from spectralrl.algo.state.sac.agent import SAC
 from spectralrl.algo.state.td3.agent import TD3
@@ -185,6 +185,9 @@ class LVRep_TD3(TD3):
         self.feature_tau = cfg.feature_tau
         self.use_feature_target = cfg.use_feature_target
         self.feature_update_ratio = cfg.feature_update_ratio
+        self.kl_sep = cfg.kl_sep
+        self.kl_coef = cfg.kl_coef
+        self.reward_coef = cfg.reward_coef
 
         self.encoder = Encoder(
             feature_dim=self.feature_dim,
@@ -226,7 +229,7 @@ class LVRep_TD3(TD3):
             hidden_dims=cfg.actor_hidden_dims,
             norm_layer=nn.LayerNorm
         ).to(self.device)
-        self.critic = RFFCritic(
+        self.critic = LVRepCritic(
             feature_dim=self.feature_dim,
             num_noise=cfg.num_noise,
             hidden_dim=cfg.critic_hidden_dim,
@@ -303,14 +306,24 @@ class LVRep_TD3(TD3):
         s_prime_pred, r_pred = self.decoder.sample(z)
         s_loss = F.mse_loss(s_prime_pred, next_obs)
         r_loss = F.mse_loss(r_pred, reward)
-        recon_loss = r_loss * 1.0 + s_loss
+        recon_loss = r_loss * self.reward_coef + s_loss
 
-        prior_mean, prior_logstd = self.f(obs, action)
-        post_var = (2 * post_logstd).exp()
-        prior_var = (2 * prior_logstd).exp()
-        kl_loss = prior_logstd - post_logstd + 0.5 * (post_var + (post_mean-prior_mean)**2) / prior_var - 0.5
-        kl_loss = kl_loss.mean()
-        feature_loss = (recon_loss + kl_loss).mean()
+        def compute_kl(post_mean, post_logstd, prior_mean, prior_logstd):
+            post_var = (2 * post_logstd).exp()
+            prior_var = (2 * prior_logstd).exp()
+            kl_loss = prior_logstd - post_logstd + 0.5 * (post_var + (post_mean-prior_mean)**2) / prior_var - 0.5
+            return kl_loss.mean()
+
+        if self.kl_sep:
+            prior_mean_target, prior_logstd_target = self.f_target(obs, action)
+            prior_mean, prior_logstd = self.f(obs, action)
+            post_kl = compute_kl(post_mean, post_logstd, prior_mean_target, prior_logstd_target)
+            prior_kl = compute_kl(post_mean.detach(), post_logstd.detach(), prior_mean, prior_logstd)
+            kl_loss = post_kl + prior_kl
+        else:
+            prior_mean, prior_logstd = self.f(obs, action)
+            kl_loss = compute_kl(post_mean, post_logstd, prior_mean, prior_logstd)
+        feature_loss = (recon_loss + self.kl_coef * kl_loss)
         return feature_loss, {
             "loss/feature_loss": feature_loss.item(),
             "loss/kl_loss": kl_loss.item(),
@@ -342,6 +355,8 @@ class LVRep_TD3(TD3):
             "misc/q_value_mean": q_value.mean().item(),
             "misc/q_value_std": q_value.std(0).mean().item(),
             "misc/q_value_min": q_value.min(0)[0].mean().item(),
+            "misc/obs_mean": obs.mean().item(),
+            "misc/obs_std": obs.std(0).mean().item(),
             "loss/actor_loss": actor_loss.item()
         }
 

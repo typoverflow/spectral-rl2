@@ -174,7 +174,7 @@ class Mean(nn.Module):
     def forward(self, x):
         return x.mean(dim=self.dim)
 
-class RFFCritic(nn.Module):
+class LVRepCritic(nn.Module):
     def __init__(
         self,
         feature_dim: int,
@@ -183,61 +183,30 @@ class RFFCritic(nn.Module):
         device: Union[str, int, torch.device] = "cpu",
     ) -> None:
         super().__init__()
+        # simulate sampling from Gaussian
         self.num_noise = num_noise
         self.register_buffer("noise", torch.randn([self.num_noise, feature_dim], requires_grad=False, device=device))
 
         self.net1 = nn.Sequential(
-            # nn.Linear(feature_dim, 1),
-            # Mean(dim=1),
             nn.Linear(feature_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.ELU(),
             nn.Linear(hidden_dim, 1),
             Mean(dim=1),
-            # nn.LayerNorm(hidden_dim),
-            # nn.ELU(),
-            # nn.Linear(hidden_dim, 1)
         )
         self.net2 = nn.Sequential(
-            # nn.Linear(feature_dim, 1),
-            # Mean(dim=1),
             nn.Linear(feature_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.ELU(),
             nn.Linear(hidden_dim, 1),
             Mean(dim=1),
-            # nn.LayerNorm(hidden_dim),
-            # nn.ELU(),
-            # nn.Linear(hidden_dim, 1)
         )
-
-        # # Q1
-        # self.l1 = nn.Linear(feature_dim, hidden_dim) # random feature
-        # self.l2 = nn.Linear(hidden_dim, hidden_dim)
-        # self.l3 = nn.Linear(hidden_dim, 1)
-
-        # self.l4 = nn.Linear(feature_dim, hidden_dim) # random feature
-        # self.l5 = nn.Linear(hidden_dim, hidden_dim)
-        # self.l6 = nn.Linear(hidden_dim, 1)
 
     def forward(self, mean, logstd):
         std = logstd.exp()
         # B, D = mean.shape
         x = mean[:, None, :] + std[:, None, :] * self.noise[None, :, :]
-        # x = x.reshape(-1, D)
 
         q1 = self.net1(x)
         q2 = self.net2(x)
         return torch.stack([q1, q2], dim=0)
-
-        # q1 = F.elu(self.l1(x))
-        # q1 = q1.reshape([B, self.num_noise, -1]).mean(dim=1)
-        # q1 = F.elu(self.l2(q1))
-        # q1 = self.l3(q1)
-
-        # q2 = F.elu(self.l4(x))
-        # q2 = q2.reshape([B, self.num_noise, -1]).mean(dim=1)
-        # q2 = F.elu(self.l5(q2))
-        # q2 = self.l6(q2)
-
-        # return torch.stack([q1, q2], dim=0)
