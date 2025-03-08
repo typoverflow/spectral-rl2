@@ -14,6 +14,7 @@ actor_lr: 0.0003
 target_policy_noise: 0.2
 noise_clip: 0.3
 exploration_noise: 0.2
+normalize_obs: false
 
 # below are params specific to ctrl_td3
 feature_dim: 256
@@ -25,5 +26,6 @@ reward_coef: 1.0
 feature_update_ratio: 1
 temperature: 0.1
 critic_hidden_dim: 512
+reward_hidden_dim: 512
 back_critic_grad: false
 critic_coef: 1.0

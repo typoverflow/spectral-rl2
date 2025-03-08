@@ -14,7 +14,13 @@ class Phi(nn.Module):
         hidden_dims,
     ) -> None:
         super().__init__()
-        self.mlp = MLP(obs_dim+action_dim, feature_dim, hidden_dims, activation=nn.ELU, norm_layer=nn.LayerNorm)
+        self.mlp = MLP(
+            obs_dim+action_dim,
+            feature_dim,
+            hidden_dims,
+            activation=nn.ELU,
+            norm_layer=nn.LayerNorm
+        )
 
     def forward(self, obs, action, dt=None):
         out = self.mlp(torch.concat([obs, action], dim=-1))
@@ -30,7 +36,13 @@ class Mu(nn.Module):
         hidden_dims,
     ) -> None:
         super().__init__()
-        self.mlp = MLP(obs_dim, feature_dim, hidden_dims, activation=nn.ELU, norm_layer=nn.LayerNorm)
+        self.mlp = MLP(
+            obs_dim,
+            feature_dim,
+            hidden_dims,
+            activation=nn.ELU,
+            norm_layer=nn.LayerNorm
+        )
 
     def forward(self, obs):
         out = self.mlp(obs)
@@ -38,17 +50,24 @@ class Mu(nn.Module):
         return out
 
 
-class Theta(nn.Module):
+class RFFReward(nn.Module):
     def __init__(
         self,
-        feature_dim,
-        hidden_dims,
-    ) -> None:
+        feature_dim: int,
+        hidden_dim: int,
+    ):
         super().__init__()
-        self.mlp = MLP(feature_dim, 1, hidden_dims, activation=nn.ELU, norm_layer=nn.LayerNorm)
+        self.net = nn.Sequential(
+            nn.LayerNorm(feature_dim),
+            RFFLayer(feature_dim, hidden_dim, learnable=True),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ELU(),
+            nn.Linear(hidden_dim, 1)
+        )
 
     def forward(self, feature):
-        return self.mlp(feature)
+        return self.net(feature)
 
 
 class RFFLayer(nn.Module):

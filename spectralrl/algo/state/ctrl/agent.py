@@ -4,10 +4,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from spectralrl.algo.state.ctrl.network import Mu, Phi, RFFCritic, Theta
+from spectralrl.algo.state.ctrl.network import Mu, Phi, RFFCritic, RFFReward
 from spectralrl.algo.state.sac.agent import SAC
 from spectralrl.algo.state.td3.agent import TD3
 from spectralrl.module.actor import SquashedDeterministicActor, SquashedGaussianActor
+from spectralrl.module.normalize import DummyNormalizer, RunningMeanStdNormalizer
 from spectralrl.utils.utils import convert_to_tensor, make_target, sync_target
 
 
@@ -202,14 +203,14 @@ class Ctrl_TD3(TD3):
             obs_dim=obs_dim,
             hidden_dims=cfg.mu_hidden_dims,
         ).to(device)
-        self.theta = Theta(
+        self.reward = RFFReward(
             feature_dim=cfg.feature_dim,
-            hidden_dims=cfg.theta_hidden_dims,
+            hidden_dim=cfg.reward_hidden_dim,
         ).to(device)
 
         self.phi_target = make_target(self.phi)
         self.feature_optim = torch.optim.Adam(
-            [*self.phi.parameters(), *self.mu.parameters(), *self.theta.parameters()],
+            [*self.phi.parameters(), *self.mu.parameters(), *self.reward.parameters()],
             lr=cfg.feature_lr
         )
 
@@ -218,7 +219,6 @@ class Ctrl_TD3(TD3):
             input_dim=self.obs_dim,
             output_dim=self.action_dim,
             hidden_dims=cfg.actor_hidden_dims,
-            # activation=nn.ELU,
             norm_layer=nn.LayerNorm,
         ).to(self.device)
         self.critic = RFFCritic(
@@ -231,11 +231,17 @@ class Ctrl_TD3(TD3):
         self.actor_optim = torch.optim.Adam(self.actor.parameters(), lr=cfg.actor_lr)
         self.critic_optim = torch.optim.Adam(self.critic.parameters(), lr=cfg.critic_lr)
 
-    def train(self, training):
+        self.normalize_obs = cfg.normalize_obs
+        if self.normalize_obs:
+            self.obs_rms = RunningMeanStdNormalizer(shape=(obs_dim,)).to(self.device)
+        else:
+            self.obs_rms = DummyNormalizer(shape=(obs_dim,)).to(self.device)
+
+    def train(self, training=True):
         super().train(training)
         self.phi.train(training)
         self.mu.train(training)
-        self.theta.train(training)
+        self.reward.train(training)
 
     def train_step(self, buffer, batch_size):
         tot_metrics = {}
@@ -245,10 +251,12 @@ class Ctrl_TD3(TD3):
             obs, action, next_obs, reward, terminal = [
                 convert_to_tensor(b, self.device) for b in itemgetter("obs", "action", "next_obs", "reward", "terminal")(batch)
             ]
-            feature_loss, feature_metrics, z_phi = self.feature_step(obs, action, next_obs, reward)
+            obs = self.obs_rms.normalize(obs)
+            next_obs = self.obs_rms.normalize(next_obs)
+            feature_loss, feature_metrics = self.feature_step(obs, action, next_obs, reward)
             tot_metrics.update(feature_metrics)
 
-            critic_loss, critic_metrics = self.critic_step(obs, action, next_obs, reward, terminal, z_phi)
+            critic_loss, critic_metrics = self.critic_step(obs, action, next_obs, reward, terminal)
             tot_metrics.update(critic_metrics)
 
             self.feature_optim.zero_grad()
@@ -277,7 +285,7 @@ class Ctrl_TD3(TD3):
         logits = torch.matmul(z_phi, z_mu.T) / self.temperature
         labels = torch.arange(logits.shape[0]).to(self.device)
         model_loss = F.cross_entropy(logits, labels)
-        reward_loss = F.mse_loss(self.theta(z_phi), reward)
+        reward_loss = F.mse_loss(self.reward(z_phi), reward)
         feature_loss = model_loss + self.reward_coef * reward_loss
 
         pos_logits_sum = logits[torch.arange(logits.shape[0]), labels].sum()
@@ -292,9 +300,9 @@ class Ctrl_TD3(TD3):
             "misc/mu_norm": z_mu.abs().mean().item(),
             "misc/pos_logits": pos_logits_mean.item(),
             "misc/neg_logits": neg_logits_mean.item(),
-        }, z_phi
+        }
 
-    def critic_step(self, obs, action, next_obs, reward, terminal, z_phi=None):
+    def critic_step(self, obs, action, next_obs, reward, terminal):
         with torch.no_grad():
             noise = (torch.randn_like(action) * self.target_policy_noise).clip(-self.noise_clip, self.noise_clip)
             next_action = (self.actor_target.sample(next_obs)[0] + noise).clip(-1.0, 1.0)
@@ -302,7 +310,7 @@ class Ctrl_TD3(TD3):
             q_target = self.critic_target(next_feature).min(0)[0]
             q_target = reward + self.discount * (1 - terminal) * q_target
         if self.back_critic_grad:
-            feature = z_phi
+            feature = self.get_feature(obs, action, use_target=False)
         else:
             feature = self.get_feature(obs, action, use_target=True)
         q_pred = self.critic(feature)
@@ -313,7 +321,10 @@ class Ctrl_TD3(TD3):
 
     def actor_step(self, obs):
         new_action, *_ = self.actor.sample(obs)
-        new_feature = self.get_feature(obs, new_action, use_target=True)
+        if self.back_critic_grad:
+            new_feature = self.get_feature(obs, new_action, use_target=False)
+        else:
+            new_feature = self.get_feature(obs, new_action, use_target=True)
         q_value = self.critic(new_feature)
         actor_loss =  - q_value.mean()
         return actor_loss, {
