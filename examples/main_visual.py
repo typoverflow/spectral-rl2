@@ -26,6 +26,7 @@ class Trainer:
             "_".join(["seed"+str(cfg.seed), cfg.name]),
             activate=not cfg.debug
         )
+        OmegaConf.save(cfg, os.path.join(self.logger.log_dir, "config.yaml"))
         self.recorder = VideoRecorder(
             self.logger.output_dir if cfg.save_video else None
         )

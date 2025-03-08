@@ -1,3 +1,5 @@
+import os
+
 import gym
 import hydra
 import numpy as np
@@ -20,6 +22,7 @@ class Trainer:
             "_".join(["seed"+str(cfg.seed), cfg.name]),
             activate=not cfg.debug
         )
+        OmegaConf.save(cfg, os.path.join(self.logger.log_dir, "config.yaml"))
         self.seed = set_seed_everywhere(cfg.seed)
         self.device = set_device(cfg.device)
 
