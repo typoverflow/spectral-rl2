@@ -4,7 +4,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from spectralrl.algo.state.ctrl.network import Mu, Phi, RFFCritic, RFFReward
+from spectralrl.algo.state.ctrl.network import (
+    FactorizedInfoNCE,
+    Mu,
+    Phi,
+    RFFCritic,
+    RFFReward,
+)
 from spectralrl.algo.state.sac.agent import SAC
 from spectralrl.algo.state.td3.agent import TD3
 from spectralrl.module.actor import SquashedDeterministicActor, SquashedGaussianActor
@@ -192,27 +198,40 @@ class Ctrl_TD3(TD3):
         self.critic_coef = cfg.critic_coef
 
         # feature networks
-        self.phi = Phi(
-            feature_dim=cfg.feature_dim,
+        self.infonce = FactorizedInfoNCE(
             obs_dim=obs_dim,
             action_dim=action_dim,
-            hidden_dims=cfg.phi_hidden_dims,
-        ).to(device)
-        self.mu = Mu(
             feature_dim=cfg.feature_dim,
-            obs_dim=obs_dim,
-            hidden_dims=cfg.mu_hidden_dims,
+            phi_hidden_dims=cfg.phi_hidden_dims,
+            mu_hidden_dims=cfg.mu_hidden_dims,
+            reward_hidden_dim=cfg.reward_hidden_dim,
         ).to(device)
-        self.reward = RFFReward(
-            feature_dim=cfg.feature_dim,
-            hidden_dim=cfg.reward_hidden_dim,
-        ).to(device)
-
-        self.phi_target = make_target(self.phi)
+        self.infonce_target = make_target(self.infonce)
         self.feature_optim = torch.optim.Adam(
-            [*self.phi.parameters(), *self.mu.parameters(), *self.reward.parameters()],
+            [*self.infonce.parameters()],
             lr=cfg.feature_lr
         )
+        # self.phi = Phi(
+        #     feature_dim=cfg.feature_dim,
+        #     obs_dim=obs_dim,
+        #     action_dim=action_dim,
+        #     hidden_dims=cfg.phi_hidden_dims,
+        # ).to(device)
+        # self.mu = Mu(
+        #     feature_dim=cfg.feature_dim,
+        #     obs_dim=obs_dim,
+        #     hidden_dims=cfg.mu_hidden_dims,
+        # ).to(device)
+        # self.reward = RFFReward(
+        #     feature_dim=cfg.feature_dim,
+        #     hidden_dim=cfg.reward_hidden_dim,
+        # ).to(device)
+
+        # self.phi_target = make_target(self.phi)
+        # self.feature_optim = torch.optim.Adam(
+        #     [*self.phi.parameters(), *self.mu.parameters(), *self.reward.parameters()],
+        #     lr=cfg.feature_lr
+        # )
 
         # rl networks
         self.actor = SquashedDeterministicActor(
@@ -239,9 +258,7 @@ class Ctrl_TD3(TD3):
 
     def train(self, training=True):
         super().train(training)
-        self.phi.train(training)
-        self.mu.train(training)
-        self.reward.train(training)
+        self.infonce.train(training)
 
     def train_step(self, buffer, batch_size):
         tot_metrics = {}
@@ -279,13 +296,12 @@ class Ctrl_TD3(TD3):
         return tot_metrics
 
     def feature_step(self, obs, action, next_obs, reward):
-        z_phi = self.phi(obs, action)
-        z_mu = self.mu(next_obs)
-
-        logits = torch.matmul(z_phi, z_mu.T) / self.temperature
+        z_phi = self.infonce.forward_phi(obs, action)
+        z_mu = self.infonce.forward_mu(next_obs)
+        logits = self.infonce.compute_logits(z_phi, z_mu)
         labels = torch.arange(logits.shape[0]).to(self.device)
         model_loss = F.cross_entropy(logits, labels)
-        reward_loss = F.mse_loss(self.reward(z_phi), reward)
+        reward_loss = F.mse_loss(self.infonce.compute_reward(z_phi), reward)
         feature_loss = model_loss + self.reward_coef * reward_loss
 
         pos_logits_sum = logits[torch.arange(logits.shape[0]), labels].sum()
@@ -335,9 +351,9 @@ class Ctrl_TD3(TD3):
         }
 
     def get_feature(self, obs, action, use_target=True):
-        model = self.phi_target if use_target else self.phi
-        return model(obs, action)
+        model = self.infonce_target if use_target else self.infonce
+        return model.forward_phi(obs, action)
 
     def sync_target(self):
         super().sync_target()
-        sync_target(self.phi, self.phi_target, self.tau)
+        sync_target(self.infonce, self.infonce_target, self.tau)

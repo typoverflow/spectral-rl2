@@ -50,6 +50,70 @@ class Mu(nn.Module):
         return out
 
 
+class FactorizedInfoNCE(nn.Module):
+    def __init__(
+        self,
+        obs_dim,
+        action_dim,
+        feature_dim,
+        phi_hidden_dims,
+        mu_hidden_dims,
+        reward_hidden_dim,
+    ) -> None:
+        super().__init__()
+        self.obs_dim = obs_dim
+        self.action_dim = action_dim
+        self.feature_dim = feature_dim
+        self.phi_net = MLP(
+            obs_dim+action_dim,
+            feature_dim,
+            phi_hidden_dims,
+            activation=nn.ELU,
+            norm_layer=nn.LayerNorm
+        )
+        self.mu_net = MLP(
+            obs_dim,
+            feature_dim,
+            mu_hidden_dims,
+            activation=nn.ELU,
+            norm_layer=nn.LayerNorm
+        )
+        self.W = nn.Parameter(torch.rand(feature_dim, feature_dim))
+        self.reward_net = nn.Sequential(
+            nn.LayerNorm(feature_dim),
+            RFFLayer(feature_dim, reward_hidden_dim, learnable=True),
+            nn.Linear(reward_hidden_dim, reward_hidden_dim),
+            nn.LayerNorm(reward_hidden_dim),
+            nn.ELU(),
+            nn.Linear(reward_hidden_dim, 1)
+        )
+
+    def forward_phi(self, obs, action):
+        out = self.phi_net(torch.concat([obs, action], dim=-1))
+        # out = torch.nn.functional.normalize(out, dim=-1)
+        return out
+
+    def forward_mu(self, obs):
+        out = self.mu_net(obs)
+        out = torch.nn.functional.tanh(out)
+        return out
+
+    def compute_reward(self, z_phi):
+        return self.reward_net(z_phi)
+
+    def compute_logits(self, z_phi, z_mu):
+        Wz = torch.matmul(self.W, z_mu.T)  # (z_dim,B)
+        logits = torch.matmul(z_phi, Wz)  # (B,B)
+        logits = logits - torch.max(logits, 1)[0][:, None]
+        return logits
+
+
+
+
+
+
+
+
 class RFFReward(nn.Module):
     def __init__(
         self,
