@@ -29,5 +29,5 @@ critic_hidden_dim: 512
 num_noise: 20
 
 kl_coef: 1.0
+kl_balance: 0.5
 reward_coef: 1.0
-kl_sep: false

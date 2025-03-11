@@ -185,8 +185,8 @@ class LVRep_TD3(TD3):
         self.feature_tau = cfg.feature_tau
         self.use_feature_target = cfg.use_feature_target
         self.feature_update_ratio = cfg.feature_update_ratio
-        self.kl_sep = cfg.kl_sep
         self.kl_coef = cfg.kl_coef
+        self.kl_balance = cfg.kl_balance
         self.reward_coef = cfg.reward_coef
 
         self.encoder = Encoder(
@@ -314,15 +314,11 @@ class LVRep_TD3(TD3):
             kl_loss = prior_logstd - post_logstd + 0.5 * (post_var + (post_mean-prior_mean)**2) / prior_var - 0.5
             return kl_loss.mean()
 
-        if self.kl_sep:
-            prior_mean_target, prior_logstd_target = self.f_target(obs, action)
-            prior_mean, prior_logstd = self.f(obs, action)
-            post_kl = compute_kl(post_mean, post_logstd, prior_mean_target, prior_logstd_target)
-            prior_kl = compute_kl(post_mean.detach(), post_logstd.detach(), prior_mean, prior_logstd)
-            kl_loss = post_kl + prior_kl
-        else:
-            prior_mean, prior_logstd = self.f(obs, action)
-            kl_loss = compute_kl(post_mean, post_logstd, prior_mean, prior_logstd)
+        prior_mean, prior_logstd = self.f(obs, action)
+        post_kl_loss = compute_kl(post_mean, post_logstd, prior_mean.detach(), prior_logstd.detach())
+        prior_kl_loss = compute_kl(post_mean.detach(), post_logstd.detach(), prior_mean, prior_logstd)
+        kl_loss = post_kl_loss * self.kl_balance + prior_kl_loss * (1 - self.kl_balance)
+
         feature_loss = (recon_loss + self.kl_coef * kl_loss)
         return feature_loss, {
             "loss/feature_loss": feature_loss.item(),
