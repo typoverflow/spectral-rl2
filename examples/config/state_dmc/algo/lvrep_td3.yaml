@@ -17,17 +17,18 @@ exploration_noise: 0.2
 normalize_obs: false
 
 # below are params specific to lvrep_td3
-feature_dim: 256
+feature_dim: 512
 feature_tau: 0.005 # hard update
 use_feature_target: true
 feature_update_ratio: 1
-encoder_hidden_dims: [256, 256, 256]
-decoder_hidden_dims: [256, 256, 256]
-f_hidden_dims: [256, 256, 256]
+encoder_hidden_dims: [512, 512, 512]
+decoder_hidden_dims: [512, 512, 512]
+f_hidden_dims: [512, 512, 512]
 feature_lr: 0.0003
-critic_hidden_dim: 512
+critic_hidden_dim: 1024
 num_noise: 20
 
-kl_coef: 1.0
+kl_coef: 0.1
 kl_balance: 0.5
 reward_coef: 1.0
+use_f_target: true
