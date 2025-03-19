@@ -24,7 +24,7 @@ class ReplayBuffer(object):
         self.size = min(self.size + 1, self.max_size)
 
     def sample(self, batch_size):
-        ind = np.random.randint(0, self.size, size=batch_size)
+        ind = np.random.choice(self.size, size=batch_size, replace=False)
         return {
             "obs": self.state[ind],
             "action": self.action[ind],

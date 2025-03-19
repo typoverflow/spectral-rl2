@@ -196,6 +196,8 @@ class Ctrl_TD3(TD3):
         self.temperature = cfg.temperature
         self.back_critic_grad = cfg.back_critic_grad
         self.critic_coef = cfg.critic_coef
+        self.aug_batch_size = cfg.aug_batch_size
+        self.feature_tau = cfg.feature_tau
 
         # feature networks
         self.infonce = FactorizedInfoNCE(
@@ -211,27 +213,6 @@ class Ctrl_TD3(TD3):
             [*self.infonce.parameters()],
             lr=cfg.feature_lr
         )
-        # self.phi = Phi(
-        #     feature_dim=cfg.feature_dim,
-        #     obs_dim=obs_dim,
-        #     action_dim=action_dim,
-        #     hidden_dims=cfg.phi_hidden_dims,
-        # ).to(device)
-        # self.mu = Mu(
-        #     feature_dim=cfg.feature_dim,
-        #     obs_dim=obs_dim,
-        #     hidden_dims=cfg.mu_hidden_dims,
-        # ).to(device)
-        # self.reward = RFFReward(
-        #     feature_dim=cfg.feature_dim,
-        #     hidden_dim=cfg.reward_hidden_dim,
-        # ).to(device)
-
-        # self.phi_target = make_target(self.phi)
-        # self.feature_optim = torch.optim.Adam(
-        #     [*self.phi.parameters(), *self.mu.parameters(), *self.reward.parameters()],
-        #     lr=cfg.feature_lr
-        # )
 
         # rl networks
         self.actor = SquashedDeterministicActor(
@@ -264,13 +245,20 @@ class Ctrl_TD3(TD3):
         tot_metrics = {}
 
         for _ in range(self.feature_update_ratio):
-            batch = buffer.sample(batch_size)
+            batch = buffer.sample(batch_size+self.aug_batch_size)
             obs, action, next_obs, reward, terminal = [
-                convert_to_tensor(b, self.device) for b in itemgetter("obs", "action", "next_obs", "reward", "terminal")(batch)
+                convert_to_tensor(b, self.device)[:batch_size] for b in itemgetter("obs", "action", "next_obs", "reward", "terminal")(batch)
             ]
+            fobs, faction, fnext_obs, freward, fterminal = [
+                convert_to_tensor(b, self.device)[batch_size:] for b in itemgetter("obs", "action", "next_obs", "reward", "terminal")(batch)
+            ]
+
             obs = self.obs_rms.normalize(obs)
             next_obs = self.obs_rms.normalize(next_obs)
-            feature_loss, feature_metrics = self.feature_step(obs, action, next_obs, reward)
+            fobs = self.obs_rms.normalize(fobs)
+            fnext_obs = self.obs_rms.normalize(fnext_obs)
+
+            feature_loss, feature_metrics = self.feature_step(fobs, faction, fnext_obs, freward)
             tot_metrics.update(feature_metrics)
 
             critic_loss, critic_metrics = self.critic_step(obs, action, next_obs, reward, terminal)
@@ -296,6 +284,8 @@ class Ctrl_TD3(TD3):
         return tot_metrics
 
     def feature_step(self, obs, action, next_obs, reward):
+        aug_next_obs = next_obs + torch.randn_like(next_obs) * 0.2
+        next_obs = torch.cat([next_obs, aug_next_obs], dim=0)
         z_phi = self.infonce.forward_phi(obs, action)
         z_mu = self.infonce.forward_mu(next_obs)
         logits = self.infonce.compute_logits(z_phi, z_mu)
@@ -307,12 +297,14 @@ class Ctrl_TD3(TD3):
         pos_logits_sum = logits[torch.arange(logits.shape[0]), labels].sum()
         neg_logits_sum = logits.sum() - pos_logits_sum
         pos_logits_mean = pos_logits_sum / logits.shape[0]
-        neg_logits_mean = neg_logits_sum / (logits.shape[0]**2 - logits.shape[0])
+        neg_logits_mean = neg_logits_sum / (logits.shape[0]*logits.shape[1] - logits.shape[0])
         return feature_loss, {
             "loss/feature_loss": feature_loss.item(),
             "loss/model_loss": model_loss.item(),
             "loss/reward_loss": reward_loss.item(),
             "misc/phi_norm": z_phi.abs().mean().item(),
+            "misc/phi_std": z_phi.std(0).mean().item(),
+            "misc/mu_std": z_mu.std(0).mean().item(),
             "misc/mu_norm": z_mu.abs().mean().item(),
             "misc/pos_logits": pos_logits_mean.item(),
             "misc/neg_logits": neg_logits_mean.item(),
@@ -328,7 +320,7 @@ class Ctrl_TD3(TD3):
         if self.back_critic_grad:
             feature = self.get_feature(obs, action, use_target=False)
         else:
-            feature = self.get_feature(obs, action, use_target=True)
+            feature = self.get_feature(obs, action, use_target=True).detach()
         q_pred = self.critic(feature)
         critic_loss = (q_target - q_pred).pow(2).sum(0).mean()
         return critic_loss, {
@@ -353,7 +345,8 @@ class Ctrl_TD3(TD3):
     def get_feature(self, obs, action, use_target=True):
         model = self.infonce_target if use_target else self.infonce
         return model.forward_phi(obs, action)
+        # return model.compute_feature(obs, action)
 
     def sync_target(self):
         super().sync_target()
-        sync_target(self.infonce, self.infonce_target, self.tau)
+        sync_target(self.infonce, self.infonce_target, self.feature_tau)
