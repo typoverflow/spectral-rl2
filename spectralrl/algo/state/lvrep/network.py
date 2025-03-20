@@ -191,11 +191,17 @@ class LVRepCritic(nn.Module):
             nn.Linear(feature_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.ELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ELU(),
             nn.Linear(hidden_dim, 1),
             Mean(dim=1),
         )
         self.net2 = nn.Sequential(
             nn.Linear(feature_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ELU(),
+            nn.Linear(hidden_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.ELU(),
             nn.Linear(hidden_dim, 1),

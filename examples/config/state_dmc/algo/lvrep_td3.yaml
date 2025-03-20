@@ -18,14 +18,14 @@ normalize_obs: false
 
 # below are params specific to lvrep_td3
 feature_dim: 512
-feature_tau: 0.005 # hard update
+feature_tau: 0.005
 use_feature_target: true
 feature_update_ratio: 1
 encoder_hidden_dims: [512, 512, 512]
 decoder_hidden_dims: [512, 512, 512]
-f_hidden_dims: [512, 512, 512]
+f_hidden_dims: [512, 512]
 feature_lr: 0.0003
-critic_hidden_dim: 1024
+critic_hidden_dim: 512
 num_noise: 20
 
 kl_coef: 0.1
