@@ -17,7 +17,7 @@ exploration_noise: 0.2
 normalize_obs: false
 
 # below are params specific to ctrl_td3
-feature_dim: 256
+feature_dim: 512
 feature_lr: 0.0001
 feature_tau: 0.005
 phi_hidden_dims: [512, 512]
@@ -25,8 +25,9 @@ mu_hidden_dims: [512, 512]
 reward_coef: 1.0
 feature_update_ratio: 1
 temperature: 1.0
-critic_hidden_dim: 512
-reward_hidden_dim: 512
+critic_hidden_dim: 1024
+reward_hidden_dim: 1024
 back_critic_grad: false
 critic_coef: 1.0
-aug_batch_size: 1024
+aug_batch_size: 512
+num_noises: 10
