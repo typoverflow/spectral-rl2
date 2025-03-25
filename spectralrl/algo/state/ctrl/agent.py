@@ -188,8 +188,7 @@ class Ctrl_TD3(TD3):
 
     def get_feature(self, obs, action, use_target=True):
         model = self.infonce_target if use_target else self.infonce
-        return model.forward_phi(obs, action)
-        # return model.compute_feature(obs, action)
+        return model.compute_feature(obs, action)
 
     def sync_target(self):
         super().sync_target()

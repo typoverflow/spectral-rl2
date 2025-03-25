@@ -139,7 +139,7 @@ class FactorizedInfoNCE(nn.Module):
             RFFLayer(feature_dim, reward_hidden_dim, learnable=True),
         )
         self.reward_net = nn.Sequential(
-            nn.Linear(reward_hidden_dim, reward_hidden_dim),
+            nn.Linear(2*reward_hidden_dim, reward_hidden_dim),
             nn.LayerNorm(reward_hidden_dim),
             nn.ELU(),
             nn.Linear(reward_hidden_dim, 1)
@@ -181,6 +181,9 @@ class FactorizedInfoNCE(nn.Module):
     def compute_reward(self, z_phi):
         return self.reward_net(self.rff_layer(z_phi))
 
+    def compute_feature(self, s, a):
+        return self.forward_phi(s, a)
+
 
 class RFFLayer(nn.Module):
     def __init__(
@@ -192,7 +195,7 @@ class RFFLayer(nn.Module):
         super().__init__()
         self.learnable = learnable
         if learnable:
-            self.layer = nn.Linear(feature_dim, hidden_dim//2)
+            self.layer = nn.Linear(feature_dim, hidden_dim)
         else:
             self.register_buffer("noise", torch.randn([feature_dim, hidden_dim], requires_grad=False))
 
@@ -214,7 +217,7 @@ class RFFCritic(nn.Module):
         self.net1 = nn.Sequential(
             nn.LayerNorm(feature_dim),
             RFFLayer(feature_dim, hidden_dim, learnable=True),
-            nn.Linear(hidden_dim, hidden_dim),
+            nn.Linear(2*hidden_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.ELU(),
             nn.Linear(hidden_dim, 1)
@@ -223,7 +226,7 @@ class RFFCritic(nn.Module):
         self.net2 = nn.Sequential(
             nn.LayerNorm(feature_dim),
             RFFLayer(feature_dim, hidden_dim, learnable=True),
-            nn.Linear(hidden_dim, hidden_dim),
+            nn.Linear(2*hidden_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.ELU(),
             nn.Linear(hidden_dim, 1)

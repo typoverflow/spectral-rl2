@@ -12,7 +12,7 @@ class RFFLayer(nn.Module):
         super().__init__()
         self.learnable = learnable
         if learnable:
-            self.layer = nn.Linear(feature_dim, hidden_dim//2)
+            self.layer = nn.Linear(feature_dim, hidden_dim)
         else:
             self.register_buffer("noise", torch.randn([feature_dim, hidden_dim], requires_grad=False))
 
@@ -33,7 +33,7 @@ class RFFReward(nn.Module):
         self.net = nn.Sequential(
             nn.LayerNorm(feature_dim),
             RFFLayer(feature_dim, hidden_dim, learnable=True),
-            nn.Linear(hidden_dim, hidden_dim),
+            nn.Linear(2*hidden_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.ELU(),
             nn.Linear(hidden_dim, 1)
@@ -52,7 +52,7 @@ class RFFCritic(nn.Module):
         self.net1 = nn.Sequential(
             nn.LayerNorm(feature_dim),
             RFFLayer(feature_dim, hidden_dim, learnable=True),
-            nn.Linear(hidden_dim, hidden_dim),
+            nn.Linear(2*hidden_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.ELU(),
             nn.Linear(hidden_dim, 1)
@@ -61,7 +61,7 @@ class RFFCritic(nn.Module):
         self.net2 = nn.Sequential(
             nn.LayerNorm(feature_dim),
             RFFLayer(feature_dim, hidden_dim, learnable=True),
-            nn.Linear(hidden_dim, hidden_dim),
+            nn.Linear(2*hidden_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.ELU(),
             nn.Linear(hidden_dim, 1)
