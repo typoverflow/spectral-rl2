@@ -3,8 +3,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from spectralrl.algo.state.ctrl.nn_idql import MLPResNet
 from spectralrl.module.net.mlp import MLP
+from spectralrl.module.net.residual import ResidualMLP
 from spectralrl.utils.utils import make_target, sync_target
 
 
@@ -99,40 +99,27 @@ class FactorizedInfoNCE(nn.Module):
         else:
             self.use_noise_perturbation = False
 
-        self.mlp_s = nn.Sequential(
-            nn.Linear(obs_dim, 256),
-            nn.Mish(),
-            nn.Linear(256, 128)
-        )
-        self.mlp_a = nn.Sequential(
-            nn.Linear(action_dim, 256),
-            nn.Mish(),
-            nn.Linear(256, 128)
-        )
         self.mlp_t = nn.Sequential(
             PositionalFeature(128),
             nn.Linear(128, 256),
             nn.Mish(),
             nn.Linear(256, 128)
         )
-
-        self.mlp_phi = MLPResNet(
-            num_blocks=len(phi_hidden_dims),
+        self.mlp_phi = ResidualMLP(
             input_dim=obs_dim+action_dim,
-            out_dim=feature_dim,
-            dropout_rate=None,
-            use_layer_norm=True,
-            hidden_dim=phi_hidden_dims[-1],
-            activations=nn.Mish()
+            output_dim=feature_dim,
+            hidden_dims=phi_hidden_dims,
+            activation=nn.Mish(),
+            dropout=None,
+            device=device
         )
-        self.mlp_mu = MLPResNet(
-            num_blocks=len(mu_hidden_dims),
+        self.mlp_mu = ResidualMLP(
             input_dim=obs_dim+128,
-            out_dim=feature_dim,
-            dropout_rate=None,
-            use_layer_norm=True,
-            hidden_dim=mu_hidden_dims[-1],
-            activations=nn.Mish()
+            output_dim=feature_dim,
+            hidden_dims=mu_hidden_dims,
+            activation=nn.Mish(),
+            dropout=None,
+            device=device
         )
         self.rff_layer = nn.Sequential(
             nn.LayerNorm(feature_dim),

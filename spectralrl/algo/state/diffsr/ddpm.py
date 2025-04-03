@@ -5,11 +5,40 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from spectralrl.module.net.residual import ResidualMLP
 from spectralrl.utils.utils import at_least_ndim
 
 from .network import RFFReward
-from .nn_idql import IDQLFactorizedScoreNet, IDQLScoreNet, MLPResNet, PositionalFeature
 
+
+# positional features
+class PositionalFeature(nn.Module):
+    def __init__(self, dim: int, max_positions: int = 10000, endpoint: bool = False):
+        super().__init__()
+        self.max_positions = max_positions
+        self.endpoint = endpoint
+        self.dim = dim
+
+    def forward(self, x):
+        freqs = torch.arange(0, self.dim // 2, dtype=torch.float32, device=x.device)
+        freqs = freqs / (self.dim // 2 - (1 if self.endpoint else 0))
+        freqs = (1 / self.max_positions) ** freqs
+        x = x.to(freqs.dtype) @ freqs.unsqueeze(0)
+        # x = x.squeeze()
+        # x = x.ger(freqs.to(x.dtype))
+        x = torch.cat([x.cos(), x.sin()], dim=1)
+        return x
+
+
+class FourierFeature(nn.Module):
+    def __init__(self, dim: int, scale: float = 1.0):
+        super().__init__()
+        assert dim % 2 == 0
+        self.register_buffer("weight", torch.randn(1, dim // 2) * scale)
+
+    def forward(self, input):
+        f = 2 * math.pi * input @ self.weight
+        return torch.cat([f.cos(), f.sin()], dim=-1)
 
 # ================= noise schedules =================
 def linear_beta_schedule(beta_min: float = 1e-4, beta_max: float = 0.02, T: int = 1000):
@@ -88,23 +117,21 @@ class DDPM(nn.Module):
             nn.Mish(),
             nn.Linear(cfg.embed_dim*2, cfg.embed_dim),
         )
-        self.mlp_psi = MLPResNet(
-            num_blocks=len(cfg.psi_hidden_dims),
+        self.mlp_psi = ResidualMLP(
             input_dim=cfg.embed_dim*2,
-            out_dim=cfg.feature_dim,
-            dropout_rate=None,
-            use_layer_norm=True,
-            hidden_dim=cfg.psi_hidden_dims[0],
-            activations=nn.Mish()
+            output_dim=cfg.feature_dim,
+            hidden_dims=cfg.psi_hidden_dims,
+            activation=nn.Mish(),
+            dropout=None,
+            device=device,
         )
-        self.mlp_zeta = MLPResNet(
-            num_blocks=len(cfg.zeta_hidden_dims),
+        self.mlp_zeta = ResidualMLP(
             input_dim=state_dim+cfg.embed_dim,
-            out_dim=state_dim*cfg.feature_dim,
-            dropout_rate=None,
-            use_layer_norm=True,
-            hidden_dim=cfg.zeta_hidden_dims[0],
-            activations=nn.Mish()
+            output_dim=state_dim*cfg.feature_dim,
+            hidden_dims=cfg.zeta_hidden_dims,
+            activation=nn.Mish(),
+            dropout=None,
+            device=device,
         )
         self.reward = RFFReward(
             feature_dim=cfg.feature_dim,
