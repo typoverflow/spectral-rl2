@@ -48,8 +48,8 @@ class MLPResNetBlock(nn.Module):
         if self.use_layer_norm:
             self.layer_norm = nn.LayerNorm(features)
 
-        self.fc1 = nn.Linear(features, features * 4)
-        self.fc2 = nn.Linear(features * 4, features)
+        self.fc1 = nn.Linear(features, features)
+        self.fc2 = nn.Linear(features, features)
         self.residual = nn.Linear(features, features)
 
         self.dropout = nn.Dropout(dropout_rate) if dropout_rate is not None and dropout_rate > 0.0 else None

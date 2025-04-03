@@ -6,6 +6,7 @@ import torch.nn as nn
 from spectralrl.algo.state.base import BaseStateAlgorithm
 from spectralrl.module.actor import SquashedGaussianActor
 from spectralrl.module.critic import EnsembleQ
+from spectralrl.module.normalize import DummyNormalizer, RunningMeanStdNormalizer
 from spectralrl.utils.utils import convert_to_tensor, make_target, sync_target
 
 
@@ -23,6 +24,7 @@ class SAC(BaseStateAlgorithm):
         self.action_dim = action_dim
         self.discount = cfg.discount
         self.tau = cfg.tau
+        self.actor_update_freq = cfg.actor_update_freq
         self.target_update_freq = cfg.target_update_freq
         self.auto_entropy = cfg.auto_entropy
 
@@ -30,11 +32,14 @@ class SAC(BaseStateAlgorithm):
             input_dim=self.obs_dim,
             output_dim=self.action_dim,
             hidden_dims=cfg.actor_hidden_dims,
+            norm_layer=nn.LayerNorm
         ).to(self.device)
         self.critic = EnsembleQ(
             input_dim=self.obs_dim+self.action_dim,
             hidden_dims=cfg.critic_hidden_dims,
             ensemble_size=2,
+            activation=nn.ELU,
+            norm_layer=nn.LayerNorm
         ).to(self.device)
         self.critic_target = make_target(self.critic)
 
@@ -47,6 +52,12 @@ class SAC(BaseStateAlgorithm):
             self.alpha_optim = torch.optim.Adam([self.log_alpha], lr=cfg.alpha_lr)
         else:
             self.log_alpha = torch.tensor([torch.log(cfg.alpha)], dtype=torch.float32, device=device, requires_grad=False)
+
+        self.normalize_obs = cfg.normalize_obs
+        if self.normalize_obs:
+            self.obs_rms = RunningMeanStdNormalizer(shape=(self.obs_dim,)).to(self.device)
+        else:
+            self.obs_rms = DummyNormalizer(shape=(self.obs_dim,)).to(self.device)
 
         self._step = 0
 
@@ -61,6 +72,11 @@ class SAC(BaseStateAlgorithm):
     @torch.no_grad()
     def select_action(self, obs, step, deterministic=False):
         obs = torch.as_tensor(obs, dtype=torch.float32, device=self.device)[None, ...]
+        if self.normalize_obs:
+            if step is not None:
+                # meaning that we are training
+                self.obs_rms.update(obs)
+            obs = self.obs_rms.normalize(obs)
         action, *_ = self.actor.sample(obs, deterministic=deterministic)
         return action.squeeze(0).detach().cpu().numpy()
 
@@ -71,28 +87,30 @@ class SAC(BaseStateAlgorithm):
         obs, action, next_obs, reward, terminal = [
             convert_to_tensor(b, self.device) for b in itemgetter("obs", "action", "next_obs", "reward", "terminal")(batch)
         ]
-
+        obs = self.obs_rms.normalize(obs)
+        next_obs = self.obs_rms.normalize(next_obs)
         critic_loss, critic_metrics = self.critic_step(obs, action, next_obs, reward, terminal)
         tot_metrics.update(critic_metrics)
         self.critic_optim.zero_grad()
         critic_loss.backward()
         self.critic_optim.step()
 
-        actor_loss, actor_metrics = self.actor_step(obs)
-        tot_metrics.update(actor_metrics)
-        self.actor_optim.zero_grad()
-        actor_loss.backward()
-        self.actor_optim.step()
+        if self._step % self.actor_update_freq == 0:
+            actor_loss, actor_metrics = self.actor_step(obs)
+            tot_metrics.update(actor_metrics)
+            self.actor_optim.zero_grad()
+            actor_loss.backward()
+            self.actor_optim.step()
 
-        if self.auto_entropy:
-            alpha_loss, alpha_metrics = self.alpha_step(obs)
-            tot_metrics.update(alpha_metrics)
-            self.alpha_optim.zero_grad()
-            alpha_loss.backward()
-            self.alpha_optim.step()
+            if self.auto_entropy:
+                alpha_loss, alpha_metrics = self.alpha_step(obs)
+                tot_metrics.update(alpha_metrics)
+                self.alpha_optim.zero_grad()
+                alpha_loss.backward()
+                self.alpha_optim.step()
 
         if self._step % self.target_update_freq == 0:
-            sync_target(self.critic, self.critic_target, self.tau)
+            self.sync_target()
 
         self._step += 1
         return tot_metrics
@@ -122,3 +140,6 @@ class SAC(BaseStateAlgorithm):
             _, new_logprobs, _ = self.actor.sample(obs)
         alpha_loss = -(self.log_alpha * (new_logprobs + self.target_entropy)).mean()
         return alpha_loss, {"misc/alpha": self.alpha.item(), "loss/alpha_loss": alpha_loss.item()}
+
+    def sync_target(self):
+        sync_target(self.critic, self.critic_target, self.tau)
