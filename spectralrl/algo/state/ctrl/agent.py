@@ -24,7 +24,6 @@ class Ctrl_TD3(TD3):
         self.feature_dim = cfg.feature_dim
         self.feature_update_ratio = cfg.feature_update_ratio
         self.reward_coef = cfg.reward_coef
-        self.temperature = cfg.temperature
         self.back_critic_grad = cfg.back_critic_grad
         self.critic_coef = cfg.critic_coef
         self.aug_batch_size = cfg.aug_batch_size

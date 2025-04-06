@@ -14,7 +14,7 @@ actor_lr: 0.0003
 target_policy_noise: 0.2
 noise_clip: 0.3
 exploration_noise: 0.2
-normalize_obs: false
+normalize_obs: true
 
 # below are params specific to diffsr_td3
 x_min: -10.0
@@ -29,15 +29,15 @@ feature_update_ratio: 1
 feature_dim: 512
 latent_dim: 256
 embed_dim: 128
-psi_hidden_dims: [256, 256]
-zeta_hidden_dims: [256, 256]
-critic_hidden_dim: 1024
-reward_hidden_dim: 1024
+psi_hidden_dims: [512, 512, 512]
+zeta_hidden_dims: [512, 512, 512]
+critic_hidden_dim: 512
+reward_hidden_dim: 512
 encoder_hidden_dims: [256, 256]
 decoder_hidden_dims: [256, 256]
 
 vae_lr: 0.0003
-diffusion_lr: 0.0003
+diffusion_lr: 0.0001
 
 use_latent: false
 recon_coef: 1.0
