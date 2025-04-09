@@ -183,11 +183,11 @@ class LVRep_TD3(TD3):
         super().__init__(obs_dim, action_dim, cfg, device)
         self.feature_dim = cfg.feature_dim
         self.feature_tau = cfg.feature_tau
-        self.use_feature_target = cfg.use_feature_target
         self.feature_update_ratio = cfg.feature_update_ratio
-        self.kl_sep = cfg.kl_sep
         self.kl_coef = cfg.kl_coef
+        self.kl_balance = cfg.kl_balance
         self.reward_coef = cfg.reward_coef
+        self.use_f_target = cfg.use_f_target
 
         self.encoder = Encoder(
             feature_dim=self.feature_dim,
@@ -212,11 +212,7 @@ class LVRep_TD3(TD3):
             norm_layer=nn.LayerNorm,
             activation=nn.ELU,
         ).to(self.device)
-
-        if self.use_feature_target:
-            self.f_target = make_target(self.f)
-        else:
-            self.f_target = self.f
+        self.f_target = make_target(self.f)
         self.feature_optim = torch.optim.Adam(
             [*self.encoder.parameters(), *self.decoder.parameters(), *self.f.parameters()],
             lr=cfg.feature_lr
@@ -314,15 +310,11 @@ class LVRep_TD3(TD3):
             kl_loss = prior_logstd - post_logstd + 0.5 * (post_var + (post_mean-prior_mean)**2) / prior_var - 0.5
             return kl_loss.mean()
 
-        if self.kl_sep:
-            prior_mean_target, prior_logstd_target = self.f_target(obs, action)
-            prior_mean, prior_logstd = self.f(obs, action)
-            post_kl = compute_kl(post_mean, post_logstd, prior_mean_target, prior_logstd_target)
-            prior_kl = compute_kl(post_mean.detach(), post_logstd.detach(), prior_mean, prior_logstd)
-            kl_loss = post_kl + prior_kl
-        else:
-            prior_mean, prior_logstd = self.f(obs, action)
-            kl_loss = compute_kl(post_mean, post_logstd, prior_mean, prior_logstd)
+        prior_mean, prior_logstd = self.f(obs, action)
+        post_kl_loss = compute_kl(post_mean, post_logstd, prior_mean.detach(), prior_logstd.detach())
+        prior_kl_loss = compute_kl(post_mean.detach(), post_logstd.detach(), prior_mean, prior_logstd)
+        kl_loss = post_kl_loss * self.kl_balance + prior_kl_loss * (1 - self.kl_balance)
+
         feature_loss = (recon_loss + self.kl_coef * kl_loss)
         return feature_loss, {
             "loss/feature_loss": feature_loss.item(),
@@ -330,14 +322,15 @@ class LVRep_TD3(TD3):
             "loss/recon_loss": recon_loss.item(),
             "misc/post_std": post_logstd.exp().mean().item(),
             "misc/prior_std": prior_logstd.exp().mean().item(),
+            "misc/prior_mean_std": prior_mean.std(0).mean().item(),
         }
 
     def critic_step(self, obs, action, next_obs, reward, terminal):
         with torch.no_grad():
             noise = (torch.randn_like(action) * self.target_policy_noise).clip(-self.noise_clip, self.noise_clip)
             next_action = (self.actor_target.sample(next_obs)[0] + noise).clip(-1.0, 1.0)
-            mean, logstd = self.f_target(obs, action)
-            next_mean, next_logstd = self.f_target(next_obs, next_action)
+            mean, logstd = self.get_feature(obs, action, use_target=self.use_f_target)
+            next_mean, next_logstd = self.get_feature(next_obs, next_action, use_target=False)
             q_target = self.critic_target(next_mean, next_logstd).min(0)[0]
             q_target = reward + self.discount * (1 - terminal) * q_target
         q_pred = self.critic(mean, logstd)
@@ -348,7 +341,7 @@ class LVRep_TD3(TD3):
 
     def actor_step(self, obs):
         new_action, *_ = self.actor.sample(obs)
-        mean, logstd = self.f_target(obs, new_action)
+        mean, logstd = self.get_feature(obs, new_action, use_target=self.use_f_target)
         q_value = self.critic(mean, logstd)
         actor_loss = - q_value.mean()
         return actor_loss, {
@@ -359,6 +352,10 @@ class LVRep_TD3(TD3):
             "misc/obs_std": obs.std(0).mean().item(),
             "loss/actor_loss": actor_loss.item()
         }
+
+    def get_feature(self, obs, action, use_target):
+        model = self.f_target if use_target else self.f
+        return model(obs, action)
 
     def sync_target(self):
         super().sync_target()

@@ -1,8 +1,7 @@
-from operator import itemgetter
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
 
 from spectralrl.algo.state.speder.network import FactorizedTransition, LinearCritic
 from spectralrl.algo.state.td3.agent import TD3
