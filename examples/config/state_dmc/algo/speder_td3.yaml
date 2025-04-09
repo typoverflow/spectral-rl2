@@ -1,4 +1,4 @@
-cls: ctrl_td3
+cls: speder_td3
 discount: 0.99
 
 tau: 0.005 # hard update
@@ -30,3 +30,4 @@ back_critic_grad: false
 critic_coef: 1.0
 aug_batch_size: 512
 num_noises: 25
+num_negatives: 512

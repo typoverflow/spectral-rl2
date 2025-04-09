@@ -44,12 +44,11 @@ class Trainer:
         algo_cls = {
             "sac": SAC,
             "lvrep_sac": LVRep_SAC,
-            "ctrl_sac": Ctrl_SAC,
-            "speder_sac": Speder_SAC,
             "td3": TD3,
             "ctrl_td3": Ctrl_TD3,
             "lvrep_td3": LVRep_TD3,
             "diffsr_td3": DiffSR_TD3,
+            "speder_td3": Speder_TD3,
         }.get(cfg.algo.cls)
         self.agent = algo_cls(
             self.train_env.observation_space.shape[0],

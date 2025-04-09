@@ -2,7 +2,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
+from spectralrl.algo.state.speder.network import FactorizedTransition, LinearCritic
 from spectralrl.algo.state.td3.agent import TD3
+from spectralrl.module.actor import SquashedDeterministicActor, SquashedGaussianActor
+from spectralrl.module.normalize import DummyNormalizer, RunningMeanStdNormalizer
 from spectralrl.utils.utils import convert_to_tensor, make_target, sync_target
 
 
@@ -18,45 +22,28 @@ class Speder_TD3(TD3):
         self.feature_dim = cfg.feature_dim
         self.feature_update_ratio = cfg.feature_update_ratio
         self.reward_coef = cfg.reward_coef
-        self.temperature = cfg.temperature
         self.back_critic_grad = cfg.back_critic_grad
         self.critic_coef = cfg.critic_coef
+        self.feature_tau = cfg.feature_tau
+        self.num_noises = cfg.num_noises
 
         # feature networks
-        self.infonce = FactorizedInfoNCE(
+        self.transition = FactorizedTransition(
             obs_dim=obs_dim,
             action_dim=action_dim,
             feature_dim=cfg.feature_dim,
             phi_hidden_dims=cfg.phi_hidden_dims,
             mu_hidden_dims=cfg.mu_hidden_dims,
             reward_hidden_dim=cfg.reward_hidden_dim,
+            num_negatives=cfg.num_negatives,
+            num_noises=cfg.num_noises,
+            device=device
         ).to(device)
-        self.infonce_target = make_target(self.infonce)
+        self.transition_target = make_target(self.transition)
         self.feature_optim = torch.optim.Adam(
-            [*self.infonce.parameters()],
+            [*self.transition.parameters()],
             lr=cfg.feature_lr
         )
-        # self.phi = Phi(
-        #     feature_dim=cfg.feature_dim,
-        #     obs_dim=obs_dim,
-        #     action_dim=action_dim,
-        #     hidden_dims=cfg.phi_hidden_dims,
-        # ).to(device)
-        # self.mu = Mu(
-        #     feature_dim=cfg.feature_dim,
-        #     obs_dim=obs_dim,
-        #     hidden_dims=cfg.mu_hidden_dims,
-        # ).to(device)
-        # self.reward = RFFReward(
-        #     feature_dim=cfg.feature_dim,
-        #     hidden_dim=cfg.reward_hidden_dim,
-        # ).to(device)
-
-        # self.phi_target = make_target(self.phi)
-        # self.feature_optim = torch.optim.Adam(
-        #     [*self.phi.parameters(), *self.mu.parameters(), *self.reward.parameters()],
-        #     lr=cfg.feature_lr
-        # )
 
         # rl networks
         self.actor = SquashedDeterministicActor(
@@ -65,7 +52,7 @@ class Speder_TD3(TD3):
             hidden_dims=cfg.actor_hidden_dims,
             norm_layer=nn.LayerNorm,
         ).to(self.device)
-        self.critic = RFFCritic(
+        self.critic = LinearCritic(
             feature_dim=self.feature_dim,
             hidden_dim=cfg.critic_hidden_dim
         ).to(self.device)
@@ -83,7 +70,7 @@ class Speder_TD3(TD3):
 
     def train(self, training=True):
         super().train(training)
-        self.infonce.train(training)
+        self.transition.train(training)
 
     def train_step(self, buffer, batch_size):
         tot_metrics = {}
@@ -91,10 +78,11 @@ class Speder_TD3(TD3):
         for _ in range(self.feature_update_ratio):
             batch = buffer.sample(batch_size)
             obs, action, next_obs, reward, terminal = [
-                convert_to_tensor(b, self.device) for b in itemgetter("obs", "action", "next_obs", "reward", "terminal")(batch)
+                convert_to_tensor(b, self.device)[:batch_size] for b in itemgetter("obs", "action", "next_obs", "reward", "terminal")(batch)
             ]
             obs = self.obs_rms.normalize(obs)
             next_obs = self.obs_rms.normalize(next_obs)
+
             feature_loss, feature_metrics = self.feature_step(obs, action, next_obs, reward)
             tot_metrics.update(feature_metrics)
 
@@ -121,27 +109,9 @@ class Speder_TD3(TD3):
         return tot_metrics
 
     def feature_step(self, obs, action, next_obs, reward):
-        z_phi = self.infonce.forward_phi(obs, action)
-        z_mu = self.infonce.forward_mu(next_obs)
-        logits = self.infonce.compute_logits(z_phi, z_mu)
-        labels = torch.arange(logits.shape[0]).to(self.device)
-        model_loss = F.cross_entropy(logits, labels)
-        reward_loss = F.mse_loss(self.infonce.compute_reward(z_phi), reward)
-        feature_loss = model_loss + self.reward_coef * reward_loss
-
-        pos_logits_sum = logits[torch.arange(logits.shape[0]), labels].sum()
-        neg_logits_sum = logits.sum() - pos_logits_sum
-        pos_logits_mean = pos_logits_sum / logits.shape[0]
-        neg_logits_mean = neg_logits_sum / (logits.shape[0]**2 - logits.shape[0])
-        return feature_loss, {
-            "loss/feature_loss": feature_loss.item(),
-            "loss/model_loss": model_loss.item(),
-            "loss/reward_loss": reward_loss.item(),
-            "misc/phi_norm": z_phi.abs().mean().item(),
-            "misc/mu_norm": z_mu.abs().mean().item(),
-            "misc/pos_logits": pos_logits_mean.item(),
-            "misc/neg_logits": neg_logits_mean.item(),
-        }
+        model_loss, reward_loss, feature_metrics = self.transition.compute_loss(obs, action, next_obs, reward)
+        feature_loss = model_loss.mean() + self.reward_coef * reward_loss.mean()
+        return feature_loss, feature_metrics
 
     def critic_step(self, obs, action, next_obs, reward, terminal):
         with torch.no_grad():
@@ -153,7 +123,7 @@ class Speder_TD3(TD3):
         if self.back_critic_grad:
             feature = self.get_feature(obs, action, use_target=False)
         else:
-            feature = self.get_feature(obs, action, use_target=True)
+            feature = self.get_feature(obs, action, use_target=True).detach()
         q_pred = self.critic(feature)
         critic_loss = (q_target - q_pred).pow(2).sum(0).mean()
         return critic_loss, {
@@ -176,9 +146,9 @@ class Speder_TD3(TD3):
         }
 
     def get_feature(self, obs, action, use_target=True):
-        model = self.infonce_target if use_target else self.infonce
-        return model.forward_phi(obs, action)
+        model = self.transition_target if use_target else self.transition
+        return model.compute_feature(obs, action)
 
     def sync_target(self):
         super().sync_target()
-        sync_target(self.infonce, self.infonce_target, self.tau)
+        sync_target(self.transition, self.transition_target, self.feature_tau)

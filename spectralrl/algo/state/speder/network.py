@@ -67,7 +67,7 @@ def generate_noise_schedule(
            torch.as_tensor(alphabars, dtype=torch.float32)
 
 
-class FactorizedInfoNCE(nn.Module):
+class FactorizedTransition(nn.Module):
     def __init__(
         self,
         obs_dim,
@@ -76,6 +76,7 @@ class FactorizedInfoNCE(nn.Module):
         phi_hidden_dims,
         mu_hidden_dims,
         reward_hidden_dim,
+        num_negatives,
         num_noises=0,
         device="cpu"
     ) -> None:
@@ -83,7 +84,9 @@ class FactorizedInfoNCE(nn.Module):
         self.obs_dim = obs_dim
         self.action_dim = action_dim
         self.feature_dim = feature_dim
+        self.num_negatives = num_negatives
         self.device = device
+
         if num_noises > 0:
             self.use_noise_perturbation = True
             self.num_noises = num_noises
@@ -113,7 +116,7 @@ class FactorizedInfoNCE(nn.Module):
             dropout=None,
             device=device
         )
-        self.mlp_mu = ResidualMLP(
+        self.mlp_mu_prime = ResidualMLP(
             input_dim=obs_dim + (128 if self.use_noise_perturbation else 0),
             output_dim=feature_dim,
             hidden_dims=mu_hidden_dims,
@@ -121,12 +124,9 @@ class FactorizedInfoNCE(nn.Module):
             dropout=None,
             device=device
         )
-        self.rff_layer = nn.Sequential(
-            nn.LayerNorm(feature_dim),
-            RFFLayer(feature_dim, reward_hidden_dim, learnable=True),
-        )
         self.reward_net = nn.Sequential(
-            nn.Linear(2*reward_hidden_dim, reward_hidden_dim),
+            nn.LayerNorm(feature_dim),
+            nn.Linear(feature_dim, reward_hidden_dim),
             nn.LayerNorm(reward_hidden_dim),
             nn.ELU(),
             nn.Linear(reward_hidden_dim, 1)
@@ -137,83 +137,97 @@ class FactorizedInfoNCE(nn.Module):
         x = self.mlp_phi(x)
         return x
 
-    def compute_logits(self, s, a, sp, z_phi=None):
-        LB = s.shape[0]
-        RB = sp.shape[0]
-        if z_phi is None:
-            z_phi = self.forward_phi(s, a) # (LB, z_dim)
-        if self.use_noise_perturbation:
-            sp = sp.unsqueeze(0).repeat(self.num_noises, 1, 1)
-            t = torch.arange(0, self.num_noises).to(self.device)
-            t = t.repeat_interleave(RB).reshape(self.num_noises, RB)
-            alphabars = self.alphabars[t]
-            eps = torch.randn_like(sp)
-            xt = alphabars.sqrt() * sp + (1 - alphabars).sqrt() * eps
-            t = t.unsqueeze(-1)
-        else:
-            xt = sp.unsqueeze(0)
-            t = None
-        z_mu = self.forward_mu(xt, t) # (N, RB, z_dim)
-        z_phi = z_phi.unsqueeze(0).repeat(z_mu.shape[0], 1, 1) # (N, LB, z_dim)
-        logits = torch.bmm(z_phi, z_mu.transpose(-1, -2))      # (N, LB, RB)
-        return logits
-
-    def forward_mu(self, sp, t=None):
+    def forward_mu_prime(self, sp, t=None):
         if t is not None:
             t_ff = self.mlp_t(t)
             sp = torch.concat([sp, t_ff], dim=-1)
-        sp = self.mlp_mu(sp)
+        sp = self.mlp_mu_prime(sp)
         return torch.nn.functional.tanh(sp)
 
-    def compute_reward(self, z_phi):
-        return self.reward_net(self.rff_layer(z_phi))
+    def compute_loss(self, s, a, sp, r):
+        B = sp.shape[0]
+        phi_sa = self.forward_phi(s, a) # (B, fdim)
+
+        # reward loss
+        reward_loss = F.mse_loss(self.compute_reward(phi_sa), r)
+
+        # model loss
+        if self.use_noise_perturbation:
+            sp = sp.unsqueeze(0).repeat(self.num_noises, 1, 1)
+            t = torch.arange(0, self.num_noises).to(self.device)
+            fake_t = t.repeat_interleave(self.num_negatives).reshape(self.num_noises, self.num_negatives)
+            t = t.repeat_interleave(B).reshape(self.num_noises, B)
+            alphabars = self.alphabars[t]
+            eps = torch.randn_like(sp)
+            tilde_sp = alphabars.sqrt() * sp + (1 - alphabars).sqrt() * eps
+            fake_t = fake_t.unsqueeze(-1)
+            t = t.unsqueeze(-1)
+        else:
+            tilde_sp = sp.unsqueeze(0)
+            fake_t = None
+            t = None
+        mu_prime_tilde_sp = self.forward_mu_prime(tilde_sp, t) # (N, B, fdim)
+        p_tilde_sp = torch.exp(-0.5*(tilde_sp**2).sum(dim=-1)).clip(min=0.0, max=1000.0) # (N, B)
+        phi_sa = phi_sa.unsqueeze(0).repeat(mu_prime_tilde_sp.shape[0], 1, 1) # (N, B, fdim)
+        loss_pt1 = (phi_sa * mu_prime_tilde_sp).sum(dim=-1) * p_tilde_sp # (N, B)
+
+        fake_tilde_sp = torch.randn(self.num_negatives, self.obs_dim).to(self.device) # (NB, obs_dim)
+        fake_p_tilde_sp = torch.exp(-0.5*(fake_tilde_sp**2).sum(dim=-1)).clip(min=0.0, max=1000.0) # (NB)
+        fake_tilde_sp = fake_tilde_sp.unsqueeze(0).repeat(mu_prime_tilde_sp.shape[0], 1, 1) # (N, NB, obs_dim)
+        fake_p_tilde_sp = fake_p_tilde_sp.unsqueeze(0).repeat(mu_prime_tilde_sp.shape[0], 1) # (N, NB)
+        fake_mu_prime_tilde_sp = self.forward_mu_prime(fake_tilde_sp, fake_t) # (N, NB, fdim)
+        loss_pt2 = torch.bmm(phi_sa, fake_mu_prime_tilde_sp.transpose(-1, -2)).pow(2) * fake_p_tilde_sp.unsqueeze(1)
+        # loss_pt2 = (phi_sa * fake_mu_prime_tilde_sp).sum(dim=-1).pow(2) * fake_p_tilde_sp
+
+        model_loss = loss_pt2.mean() - 2*loss_pt1.mean()
+
+        # below are metrics for logging
+        with torch.no_grad():
+            num_item = phi_sa.shape[0]
+            pos_probs = loss_pt1.mean(dim=-1)
+            neg_probs = ((phi_sa * fake_mu_prime_tilde_sp).sum(dim=-1) * fake_p_tilde_sp).mean(dim=-1)
+
+        metrics = {
+            "loss/model_loss": model_loss.item(),
+            "loss/reward_loss": reward_loss.item(),
+            "misc/phi_norm": phi_sa[0].abs().mean().item(),
+            "misc/phi_std": phi_sa[0].std(0).mean().item(),
+        }
+        metrics.update({
+            f"detail/pos_prob_{i}": pos_probs[i].item() for i in range(num_item)
+        })
+        metrics.update({
+            f"detail/neg_prob_{i}": neg_probs[i].item() for i in range(num_item)
+        })
+        metrics.update({
+            f"detail/prob_gap_{i}": (pos_probs[i] - neg_probs[i]).item() for i in range(num_item)
+        })
+        return model_loss, reward_loss, metrics
 
     def compute_feature(self, s, a):
         return self.forward_phi(s, a)
 
+    def compute_reward(self, z_phi):
+        return self.reward_net(z_phi)
 
-class RFFLayer(nn.Module):
+
+class LinearCritic(nn.Module):
     def __init__(
         self,
         feature_dim: int,
         hidden_dim: int,
-        learnable: bool = True
-    ):
-        super().__init__()
-        self.learnable = learnable
-        if learnable:
-            self.layer = nn.Linear(feature_dim, hidden_dim)
-        else:
-            self.register_buffer("noise", torch.randn([feature_dim, hidden_dim], requires_grad=False))
-
-    def forward(self, x):
-        if self.learnable:
-            x = self.layer(x)
-            return torch.concat([torch.sin(x), torch.cos(x)], dim=-1)
-        else:
-            return torch.sin(x @ self.noise)
-
-
-class RFFCritic(nn.Module):
-    def __init__(
-        self,
-        feature_dim: int,
-        hidden_dim: int
-    ):
+    ) -> None:
         super().__init__()
         self.net1 = nn.Sequential(
             nn.LayerNorm(feature_dim),
-            RFFLayer(feature_dim, hidden_dim, learnable=True),
-            nn.Linear(2*hidden_dim, hidden_dim),
+            nn.Linear(feature_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.ELU(),
             nn.Linear(hidden_dim, 1)
         )
-
         self.net2 = nn.Sequential(
             nn.LayerNorm(feature_dim),
-            RFFLayer(feature_dim, hidden_dim, learnable=True),
-            nn.Linear(2*hidden_dim, hidden_dim),
+            nn.Linear(feature_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.ELU(),
             nn.Linear(hidden_dim, 1)

@@ -3,12 +3,14 @@ discount: 0.99
 tau: 0.005
 alpha: 0.2
 auto_entropy: true
+actor_update_freq: 1
+target_update_freq: 1
 
-target_update_freq: 2
+critic_hidden_dims: [512, 512, 512]
+actor_hidden_dims: [512, 512, 512]
 
-critic_hidden_dims: [1024, 1024]
-actor_hidden_dims: [1024, 1024]
+critic_lr: 0.0003
+actor_lr: 0.0003
+alpha_lr: 0.0003
 
-critic_lr: 0.0001
-actor_lr: 0.0001
-alpha_lr: 0.0001
+normalize_obs: false
