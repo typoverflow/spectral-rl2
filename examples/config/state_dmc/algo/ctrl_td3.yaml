@@ -30,3 +30,4 @@ back_critic_grad: false
 critic_coef: 1.0
 aug_batch_size: 512
 num_noises: 25
+linear: false
