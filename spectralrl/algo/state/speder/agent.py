@@ -1,7 +1,8 @@
+from operator import itemgetter
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
 
 from spectralrl.algo.state.speder.network import FactorizedTransition, LinearCritic
 from spectralrl.algo.state.td3.agent import TD3
@@ -35,7 +36,6 @@ class Speder_TD3(TD3):
             phi_hidden_dims=cfg.phi_hidden_dims,
             mu_hidden_dims=cfg.mu_hidden_dims,
             reward_hidden_dim=cfg.reward_hidden_dim,
-            num_negatives=cfg.num_negatives,
             num_noises=cfg.num_noises,
             device=device
         ).to(device)

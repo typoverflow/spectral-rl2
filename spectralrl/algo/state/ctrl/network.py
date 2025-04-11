@@ -121,16 +121,6 @@ class FactorizedInfoNCE(nn.Module):
             dropout=None,
             device=device
         )
-        self.rff_layer = nn.Sequential(
-            nn.LayerNorm(feature_dim),
-            RFFLayer(feature_dim, reward_hidden_dim, learnable=True),
-        )
-        self.reward_net = nn.Sequential(
-            nn.Linear(2*reward_hidden_dim, reward_hidden_dim),
-            nn.LayerNorm(reward_hidden_dim),
-            nn.ELU(),
-            nn.Linear(reward_hidden_dim, 1)
-        )
 
     def forward_phi(self, s, a):
         x = torch.concat([s, a], dim=-1)
@@ -165,9 +155,6 @@ class FactorizedInfoNCE(nn.Module):
         sp = self.mlp_mu(sp)
         return torch.nn.functional.tanh(sp)
 
-    def compute_reward(self, z_phi):
-        return self.reward_net(self.rff_layer(z_phi))
-
     def compute_feature(self, s, a):
         return self.forward_phi(s, a)
 
@@ -192,6 +179,70 @@ class RFFLayer(nn.Module):
             return torch.concat([torch.sin(x), torch.cos(x)], dim=-1)
         else:
             return torch.sin(x @ self.noise)
+
+
+class LinearReward(nn.Module):
+    def __init__(
+        self,
+        feature_dim: int,
+        hidden_dim: int,
+    ):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(feature_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ELU(),
+            nn.Linear(hidden_dim, 1)
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+
+class RFFReward(nn.Module):
+    def __init__(
+        self,
+        feature_dim: int,
+        hidden_dim: int,
+    ):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.LayerNorm(feature_dim),
+            RFFLayer(feature_dim, hidden_dim, learnable=True),
+            nn.Linear(2*hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ELU(),
+            nn.Linear(hidden_dim, 1)
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+
+class LinearCritic(nn.Module):
+    def __init__(
+        self,
+        feature_dim: int,
+        hidden_dim: int,
+    ):
+        super().__init__()
+        self.net1 = nn.Sequential(
+            nn.Linear(feature_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ELU(),
+            nn.Linear(hidden_dim, 1)
+        )
+        self.net2 = nn.Sequential(
+            nn.Linear(feature_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ELU(),
+            nn.Linear(hidden_dim, 1)
+        )
+
+    def forward(self, x):
+        q1 = self.net1(x)
+        q2 = self.net2(x)
+        return torch.stack([q1, q2], dim=0)
 
 
 class RFFCritic(nn.Module):

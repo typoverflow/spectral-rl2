@@ -4,7 +4,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from spectralrl.algo.state.ctrl.network import FactorizedInfoNCE, RFFCritic
+from spectralrl.algo.state.ctrl.network import (
+    FactorizedInfoNCE,
+    LinearCritic,
+    LinearReward,
+    RFFCritic,
+    RFFReward,
+)
 from spectralrl.algo.state.sac.agent import SAC
 from spectralrl.algo.state.td3.agent import TD3
 from spectralrl.module.actor import SquashedDeterministicActor, SquashedGaussianActor
@@ -29,6 +35,7 @@ class Ctrl_TD3(TD3):
         self.aug_batch_size = cfg.aug_batch_size
         self.feature_tau = cfg.feature_tau
         self.num_noises = cfg.num_noises
+        self.linear = cfg.linear
 
         # feature networks
         self.infonce = FactorizedInfoNCE(
@@ -41,9 +48,19 @@ class Ctrl_TD3(TD3):
             num_noises=cfg.num_noises,
             device=device
         ).to(device)
+        if self.linear:
+            self.reward = LinearReward(
+                feature_dim=self.feature_dim,
+                hidden_dim=cfg.reward_hidden_dim
+            ).to(self.device)
+        else:
+            self.reward = RFFReward(
+                feature_dim=self.feature_dim,
+                hidden_dim=cfg.reward_hidden_dim
+            ).to(self.device)
         self.infonce_target = make_target(self.infonce)
         self.feature_optim = torch.optim.Adam(
-            [*self.infonce.parameters()],
+            [*self.infonce.parameters(), *self.reward.parameters()],
             lr=cfg.feature_lr
         )
 
@@ -54,10 +71,16 @@ class Ctrl_TD3(TD3):
             hidden_dims=cfg.actor_hidden_dims,
             norm_layer=nn.LayerNorm,
         ).to(self.device)
-        self.critic = RFFCritic(
-            feature_dim=self.feature_dim,
-            hidden_dim=cfg.critic_hidden_dim
-        ).to(self.device)
+        if self.linear:
+            self.critic = LinearCritic(
+                feature_dim=self.feature_dim,
+                hidden_dim=cfg.critic_hidden_dim
+            ).to(self.device)
+        else:
+            self.critic = RFFCritic(
+                feature_dim=self.feature_dim,
+                hidden_dim=cfg.critic_hidden_dim
+            ).to(self.device)
         self.actor_target = make_target(self.actor)
         self.critic_target = make_target(self.critic)
 
@@ -119,10 +142,17 @@ class Ctrl_TD3(TD3):
     def feature_step(self, obs, action, next_obs, reward):
         z_phi = self.infonce.forward_phi(obs, action)
         logits = self.infonce.compute_logits(obs, action, next_obs, z_phi)
+        if self.linear:
+            effective_logits = torch.nn.functional.relu(logits) + 1e-6
+            effective_logits = effective_logits.detach() - logits.detach() + logits
+            effective_logits = effective_logits.log()
+            # logits = (torch.nn.functional.relu(logits) + 1e-6).log()
+        else:
+            effective_logits = logits
         labels = torch.arange(logits.shape[1]).to(self.device)
         labels = labels.unsqueeze(0).repeat(logits.shape[0], 1)
-        model_loss = F.cross_entropy(logits, labels, reduction="none").mean(-1)
-        reward_loss = F.mse_loss(self.infonce.compute_reward(z_phi), reward)
+        model_loss = F.cross_entropy(effective_logits, labels, reduction="none").mean(-1)
+        reward_loss = F.mse_loss(self.reward(z_phi), reward)
         feature_loss = model_loss.mean() + self.reward_coef * reward_loss
 
         # Extract positive logits for each noise sample

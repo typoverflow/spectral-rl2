@@ -76,7 +76,6 @@ class FactorizedTransition(nn.Module):
         phi_hidden_dims,
         mu_hidden_dims,
         reward_hidden_dim,
-        num_negatives,
         num_noises=0,
         device="cpu"
     ) -> None:
@@ -84,7 +83,6 @@ class FactorizedTransition(nn.Module):
         self.obs_dim = obs_dim
         self.action_dim = action_dim
         self.feature_dim = feature_dim
-        self.num_negatives = num_negatives
         self.device = device
 
         if num_noises > 0:
@@ -116,7 +114,7 @@ class FactorizedTransition(nn.Module):
             dropout=None,
             device=device
         )
-        self.mlp_mu_prime = ResidualMLP(
+        self.mlp_mu = ResidualMLP(
             input_dim=obs_dim + (128 if self.use_noise_perturbation else 0),
             output_dim=feature_dim,
             hidden_dims=mu_hidden_dims,
@@ -129,6 +127,9 @@ class FactorizedTransition(nn.Module):
             nn.Linear(feature_dim, reward_hidden_dim),
             nn.LayerNorm(reward_hidden_dim),
             nn.ELU(),
+            nn.Linear(reward_hidden_dim, reward_hidden_dim),
+            nn.LayerNorm(reward_hidden_dim),
+            nn.ELU(),
             nn.Linear(reward_hidden_dim, 1)
         )
 
@@ -137,11 +138,11 @@ class FactorizedTransition(nn.Module):
         x = self.mlp_phi(x)
         return x
 
-    def forward_mu_prime(self, sp, t=None):
+    def forward_mu(self, sp, t=None):
         if t is not None:
             t_ff = self.mlp_t(t)
             sp = torch.concat([sp, t_ff], dim=-1)
-        sp = self.mlp_mu_prime(sp)
+        sp = self.mlp_mu(sp)
         return torch.nn.functional.tanh(sp)
 
     def compute_loss(self, s, a, sp, r):
@@ -155,29 +156,21 @@ class FactorizedTransition(nn.Module):
         if self.use_noise_perturbation:
             sp = sp.unsqueeze(0).repeat(self.num_noises, 1, 1)
             t = torch.arange(0, self.num_noises).to(self.device)
-            fake_t = t.repeat_interleave(self.num_negatives).reshape(self.num_noises, self.num_negatives)
             t = t.repeat_interleave(B).reshape(self.num_noises, B)
             alphabars = self.alphabars[t]
             eps = torch.randn_like(sp)
             tilde_sp = alphabars.sqrt() * sp + (1 - alphabars).sqrt() * eps
-            fake_t = fake_t.unsqueeze(-1)
             t = t.unsqueeze(-1)
         else:
             tilde_sp = sp.unsqueeze(0)
-            fake_t = None
             t = None
-        mu_prime_tilde_sp = self.forward_mu_prime(tilde_sp, t) # (N, B, fdim)
-        p_tilde_sp = torch.exp(-0.5*(tilde_sp**2).sum(dim=-1)).clip(min=0.0, max=1000.0) # (N, B)
-        phi_sa = phi_sa.unsqueeze(0).repeat(mu_prime_tilde_sp.shape[0], 1, 1) # (N, B, fdim)
-        loss_pt1 = (phi_sa * mu_prime_tilde_sp).sum(dim=-1) * p_tilde_sp # (N, B)
 
-        fake_tilde_sp = torch.randn(self.num_negatives, self.obs_dim).to(self.device) # (NB, obs_dim)
-        fake_p_tilde_sp = torch.exp(-0.5*(fake_tilde_sp**2).sum(dim=-1)).clip(min=0.0, max=1000.0) # (NB)
-        fake_tilde_sp = fake_tilde_sp.unsqueeze(0).repeat(mu_prime_tilde_sp.shape[0], 1, 1) # (N, NB, obs_dim)
-        fake_p_tilde_sp = fake_p_tilde_sp.unsqueeze(0).repeat(mu_prime_tilde_sp.shape[0], 1) # (N, NB)
-        fake_mu_prime_tilde_sp = self.forward_mu_prime(fake_tilde_sp, fake_t) # (N, NB, fdim)
-        loss_pt2 = torch.bmm(phi_sa, fake_mu_prime_tilde_sp.transpose(-1, -2)).pow(2) * fake_p_tilde_sp.unsqueeze(1)
-        # loss_pt2 = (phi_sa * fake_mu_prime_tilde_sp).sum(dim=-1).pow(2) * fake_p_tilde_sp
+        mu_tilde_sp = self.forward_mu(tilde_sp, t)
+        phi_sa = phi_sa.unsqueeze(0).repeat(mu_tilde_sp.shape[0], 1, 1)
+        inner = torch.bmm(phi_sa, mu_tilde_sp.transpose(-1, -2)) # (N, B, B)
+
+        loss_pt1 = torch.diagonal(inner, dim1=-2, dim2=-1)
+        loss_pt2 = inner.pow(2)
 
         model_loss = loss_pt2.mean() - 2*loss_pt1.mean()
 
@@ -185,7 +178,7 @@ class FactorizedTransition(nn.Module):
         with torch.no_grad():
             num_item = phi_sa.shape[0]
             pos_probs = loss_pt1.mean(dim=-1)
-            neg_probs = ((phi_sa * fake_mu_prime_tilde_sp).sum(dim=-1) * fake_p_tilde_sp).mean(dim=-1)
+            neg_probs = inner.mean(dim=[-2, -1])
 
         metrics = {
             "loss/model_loss": model_loss.item(),
@@ -223,11 +216,17 @@ class LinearCritic(nn.Module):
             nn.Linear(feature_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.ELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ELU(),
             nn.Linear(hidden_dim, 1)
         )
         self.net2 = nn.Sequential(
             nn.LayerNorm(feature_dim),
             nn.Linear(feature_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ELU(),
+            nn.Linear(hidden_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.ELU(),
             nn.Linear(hidden_dim, 1)

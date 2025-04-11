@@ -7,3 +7,4 @@ out/
 wandb/
 ckpts/
 outputs/
+.cursor/
